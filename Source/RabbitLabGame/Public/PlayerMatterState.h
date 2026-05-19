@@ -119,12 +119,16 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Matter State|Gas")
 	float GasMaxFallSpeed = 80.0f;
 
+	UPROPERTY(EditAnywhere, Category="Matter State|Gas", meta=(ClampMin="0.0", UIMin="0.0"))
+	float GasDurationSeconds = 5.0f;
+
 	UPROPERTY(BlueprintReadOnly, Category="Matter State")
 	bool bCanMeltObjects = false;
 
 	void EnterMatterState(EPlayerMatterState State);
 	void ExitMatterState(EPlayerMatterState State);
 	void CycleMatterState(int32 Direction);
+	void HandleGasDurationExpired();
 	IPlayerState* GetStateObject(EPlayerMatterState State) const;
 
 	TUniquePtr<IPlayerState> SolidStateObject;

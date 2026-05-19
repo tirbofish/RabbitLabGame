@@ -13,6 +13,9 @@ void SolidState::EnterState()
 	{
 		return;
 	}
+	
+	if (GEngine) 
+		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, TEXT("SolidState::EnterState"));
 
 	UCharacterMovementComponent* Movement = Owner->GetCharacterMovement();
 	Movement->SetMovementMode(MOVE_Walking);
@@ -26,6 +29,9 @@ void SolidState::EnterState()
 
 void SolidState::ExitState()
 {
+	if (GEngine) 
+		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, TEXT("SolidState::EnterState"));
+	
 	IPlayerState::ExitState();
 }
 

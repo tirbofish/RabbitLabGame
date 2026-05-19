@@ -13,6 +13,9 @@ void LiquidState::EnterState()
 	{
 		return;
 	}
+	
+	if (GEngine) 
+		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, TEXT("LiquidState::EnterState"));
 
 	UCharacterMovementComponent* Movement = Owner->GetCharacterMovement();
 	Movement->SetMovementMode(MOVE_Walking);
@@ -30,6 +33,9 @@ void LiquidState::ExitState()
 	{
 		Owner->bCanMeltObjects = false;
 	}
+	
+	if (GEngine) 
+		GEngine->AddOnScreenDebugMessage(-1, 5.0, FColor::Red, TEXT("LiquidState::ExitState"));
 
 	IPlayerState::ExitState();
 }
