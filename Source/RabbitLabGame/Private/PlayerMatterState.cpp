@@ -1,9 +1,13 @@
 #include "PlayerMatterState.h"
 
+#include "Components/ChildActorComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "EnhancedInputComponent.h"
+#include "Engine/World.h"
 #include "GasState.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "LiquidState.h"
+#include "MeltableSurface.h"
 #include "SolidState.h"
 #include "UObject/ConstructorHelpers.h"
 
@@ -27,6 +31,43 @@ int32 FindMatterOrdinalIndex(EPlayerMatterState State)
 	}
 
 	return 0;
+}
+
+AMeltableSurface* FindMeltableSurface(AActor* Other, UPrimitiveComponent* OtherComp)
+{
+	if (AMeltableSurface* MeltableSurface = Cast<AMeltableSurface>(Other))
+	{
+		return MeltableSurface;
+	}
+
+	if (OtherComp)
+	{
+		if (AMeltableSurface* MeltableSurface = Cast<AMeltableSurface>(OtherComp->GetOwner()))
+		{
+			return MeltableSurface;
+		}
+	}
+
+	if (Other)
+	{
+		TArray<UChildActorComponent*> ChildActorComponents;
+		Other->GetComponents<UChildActorComponent>(ChildActorComponents);
+
+		for (UChildActorComponent* ChildActorComponent : ChildActorComponents)
+		{
+			if (!ChildActorComponent)
+			{
+				continue;
+			}
+
+			if (AMeltableSurface* MeltableSurface = Cast<AMeltableSurface>(ChildActorComponent->GetChildActor()))
+			{
+				return MeltableSurface;
+			}
+		}
+	}
+
+	return nullptr;
 }
 }
 
@@ -107,6 +148,8 @@ void APlayerMatterState::Tick(float DeltaTime)
 	{
 		StateObject->UpdateState(DeltaTime);
 	}
+
+	ApplyLiquidMelt(DeltaTime);
 }
 
 void APlayerMatterState::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -138,6 +181,41 @@ void APlayerMatterState::SetupPlayerInputComponent(UInputComponent* PlayerInputC
 			&APlayerMatterState::MatterOrdinalDown
 		);
 	}
+}
+
+void APlayerMatterState::NotifyHit(
+	UPrimitiveComponent* MyComp,
+	AActor* Other,
+	UPrimitiveComponent* OtherComp,
+	bool bSelfMoved,
+	FVector HitLocation,
+	FVector HitNormal,
+	FVector NormalImpulse,
+	const FHitResult& Hit
+)
+{
+	Super::NotifyHit(MyComp, Other, OtherComp, bSelfMoved, HitLocation, HitNormal, NormalImpulse, Hit);
+
+	if (!bCanMeltObjects || !IsLiquid())
+	{
+		return;
+	}
+
+	AMeltableSurface* MeltableSurface = FindMeltableSurface(Other, OtherComp);
+	if (!MeltableSurface)
+	{
+		return;
+	}
+
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// Only update the target surface reference - actual melting happens via trace in ApplyLiquidMelt
+	ActiveMeltableSurface = MeltableSurface;
+	LastMeltContactTime = World->GetTimeSeconds();
 }
 
 void APlayerMatterState::SetMatterState(EPlayerMatterState NewState)
@@ -205,6 +283,71 @@ void APlayerMatterState::CycleMatterState(int32 Direction)
 	);
 
 	SetMatterState(MatterOrdinal[NextIndex]);
+}
+
+void APlayerMatterState::ApplyLiquidMelt(float DeltaTime)
+{
+	if (!bCanMeltObjects || !IsLiquid() || DeltaTime <= 0.0f)
+	{
+		return;
+	}
+
+	AMeltableSurface* MeltableSurface = ActiveMeltableSurface.Get();
+	if (!MeltableSurface)
+	{
+		return;
+	}
+
+	const UWorld* World = GetWorld();
+	if (!World || World->GetTimeSeconds() - LastMeltContactTime > 0.3f)
+	{
+		ActiveMeltableSurface.Reset();
+		ActiveMeltAccumulatedDepth = 0.0f;
+		return;
+	}
+
+	// Use a sphere trace downward from the player's center to find the exact melt point
+	// This avoids the instability of using NotifyHit locations during physics resolution
+	const FVector TraceStart = GetActorLocation();
+	const FVector TraceEnd = TraceStart - FVector(0.0f, 0.0f, LiquidMeltTraceDistance);
+
+	FHitResult TraceHit;
+	FCollisionQueryParams QueryParams;
+	QueryParams.AddIgnoredActor(this);
+
+	const bool bHit = World->SweepSingleByChannel(
+		TraceHit,
+		TraceStart,
+		TraceEnd,
+		FQuat::Identity,
+		ECC_Visibility,
+		FCollisionShape::MakeSphere(LiquidMeltRadius * 0.25f),
+		QueryParams
+	);
+
+	if (!bHit || TraceHit.GetActor() != MeltableSurface)
+	{
+		return;
+	}
+
+	const FVector HitLocation = TraceHit.ImpactPoint;
+	const bool bSameSpot = FVector::DistSquared(ActiveMeltLocation, HitLocation) <= FMath::Square(LiquidMeltRadius * 0.5f);
+
+	if (!bSameSpot)
+	{
+		ActiveMeltAccumulatedDepth = 0.0f;
+	}
+
+	ActiveMeltLocation = HitLocation;
+	ActiveMeltNormal = TraceHit.ImpactNormal;
+	ActiveMeltAccumulatedDepth += LiquidMeltRate * DeltaTime;
+
+	// Apply a spherical crater - radius grows slightly with accumulated depth for sinking effect
+	const float EffectiveRadius = LiquidMeltRadius + ActiveMeltAccumulatedDepth * 0.1f;
+	MeltableSurface->ApplySphericalCrater(
+		ActiveMeltLocation,
+		FMath::Min(EffectiveRadius, LiquidMeltRadius * 2.0f)
+	);
 }
 
 IPlayerState* APlayerMatterState::GetStateObject(EPlayerMatterState State) const

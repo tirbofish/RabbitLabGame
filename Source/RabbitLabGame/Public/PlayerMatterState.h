@@ -21,6 +21,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
 );
 
 class APlayerMatterState;
+class AMeltableSurface;
 class SolidState;
 class LiquidState;
 class GasState;
@@ -57,6 +58,10 @@ public:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaTime) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
+	virtual void NotifyHit(class UPrimitiveComponent* MyComp, AActor* Other, class UPrimitiveComponent* OtherComp, bool bSelfMoved, FVector HitLocation, FVector HitNormal, FVector NormalImpulse, const FHitResult& Hit) override;
+
+	UPROPERTY(EditAnywhere, Category="Matter State|Liquid")
+	float LiquidMeltTraceDistance = 80.0f;
 
 	UFUNCTION(BlueprintCallable, Category="Matter State")
 	void SetMatterState(EPlayerMatterState NewState);
@@ -72,6 +77,12 @@ public:
 
 	UFUNCTION(BlueprintPure, Category="Matter State")
 	bool IsGas() const { return CurrentMatterState == EPlayerMatterState::Gas; }
+
+	UFUNCTION(BlueprintPure, Category="Matter State|Liquid")
+	float GetLiquidMeltRadius() const { return LiquidMeltRadius; }
+
+	UFUNCTION(BlueprintPure, Category="Matter State|Liquid")
+	float GetLiquidMeltRate() const { return LiquidMeltRate; }
 
 	UFUNCTION(BlueprintCallable, Category="Matter State")
 	void SwitchToSolid();
@@ -105,7 +116,13 @@ protected:
 	float LiquidWalkSpeed = 420.0f;
 
 	UPROPERTY(EditAnywhere, Category="Matter State|Liquid")
-	float LiquidJumpVelocity = 250.0f;
+	float LiquidJumpVelocity = 700.0f;
+
+	UPROPERTY(EditAnywhere, Category="Matter State|Liquid")
+	float LiquidMeltRadius = 50.0f;
+
+	UPROPERTY(EditAnywhere, Category="Matter State|Liquid")
+	float LiquidMeltRate = 75.0f;
 
 	UPROPERTY(EditAnywhere, Category="Matter State|Gas")
 	float GasFlySpeed = 300.0f;
@@ -128,12 +145,18 @@ protected:
 	void EnterMatterState(EPlayerMatterState State);
 	void ExitMatterState(EPlayerMatterState State);
 	void CycleMatterState(int32 Direction);
-	void HandleGasDurationExpired();
+	void ApplyLiquidMelt(float DeltaTime);
 	IPlayerState* GetStateObject(EPlayerMatterState State) const;
 
 	TUniquePtr<IPlayerState> SolidStateObject;
 	TUniquePtr<IPlayerState> LiquidStateObject;
 	TUniquePtr<IPlayerState> GasStateObject;
+
+	TWeakObjectPtr<AMeltableSurface> ActiveMeltableSurface;
+	FVector ActiveMeltLocation = FVector::ZeroVector;
+	FVector ActiveMeltNormal = FVector::UpVector;
+	float ActiveMeltAccumulatedDepth = 0.0f;
+	float LastMeltContactTime = -1.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Input")
 	TObjectPtr<UInputAction> MatterOrdinalUpAction;

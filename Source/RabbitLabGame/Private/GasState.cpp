@@ -1,6 +1,7 @@
 #include "GasState.h"
 
 #include "TimerManager.h"
+#include "Engine/Engine.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
 void GasState::SwitchToState()

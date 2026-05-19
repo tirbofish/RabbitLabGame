@@ -9,7 +9,16 @@ public class RabbitLabGame : ModuleRules
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 		PrivatePCHHeaderFile = "Public/RabbitLabGame.h";
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput" });
+		PublicDependencyModuleNames.AddRange(new string[]
+		{
+			"Core",
+			"CoreUObject",
+			"Engine",
+			"InputCore",
+			"EnhancedInput",
+			"GeometryCore",
+			"GeometryFramework"
+		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
 
