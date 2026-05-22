@@ -1,5 +1,6 @@
 #include "SolidState.h"
 
+#include "Engine/Engine.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
 void SolidState::SwitchToState()
