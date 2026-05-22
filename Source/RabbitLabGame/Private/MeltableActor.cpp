@@ -7,6 +7,7 @@
 #include "RawIndexBuffer.h"
 #include "StaticMeshResources.h"
 #include "Components/StaticMeshComponent.h"
+#include "DrawDebugHelpers.h"
 #include "Engine/StaticMesh.h"
 
 class FPositionVertexBuffer;
@@ -193,6 +194,49 @@ AMeltableActor::AMeltableActor()
 	SurfaceNetsGrid.VoxelCountZ = 32;
 
 	SurfaceNetsIsovalue = 0.0f;
+}
+
+void AMeltableActor::DrawMeltCollisionDebug(
+	const FVector& CollisionLocation,
+	const FVector& CollisionNormal,
+	float MeltRadius
+) const
+{
+	const UWorld* World = GetWorld();
+	if (!World || MeltRadius <= 0.0f)
+	{
+		return;
+	}
+
+	const FVector Normal = CollisionNormal.IsNearlyZero() ? FVector::UpVector : CollisionNormal.GetSafeNormal();
+	FVector AxisY = FVector::RightVector;
+	FVector AxisZ = FVector::UpVector;
+	Normal.FindBestAxisVectors(AxisY, AxisZ);
+
+	DrawDebugCircle(
+		World,
+		CollisionLocation,
+		MeltRadius,
+		64,
+		FColor::Cyan,
+		false,
+		DebugCollisionDuration,
+		0,
+		DebugCollisionLineThickness,
+		AxisY,
+		AxisZ,
+		false
+	);
+
+	DrawDebugString(
+		World,
+		CollisionLocation + Normal * 24.0f,
+		FString::Printf(TEXT("Melt radius %.1f"), MeltRadius),
+		nullptr,
+		FColor::Cyan,
+		DebugCollisionDuration,
+		true
+	);
 }
 
 void AMeltableActor::BeginPlay()

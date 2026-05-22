@@ -6,7 +6,10 @@
 #include "Engine/World.h"
 #include "GasState.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "LiquidState.h"
+#include "MeltableActor.h"
+#include "RabbitLabCheatManager.h"
 #include "SolidState.h"
 #include "UObject/ConstructorHelpers.h"
 
@@ -30,6 +33,24 @@ namespace
 		}
 
 		return 0;
+	}
+
+	AMeltableActor* FindMeltableActor(AActor* Other, UPrimitiveComponent* OtherComp)
+	{
+		if (AMeltableActor* MeltableActor = Cast<AMeltableActor>(Other))
+		{
+			return MeltableActor;
+		}
+
+		if (OtherComp)
+		{
+			if (AMeltableActor* MeltableActor = Cast<AMeltableActor>(OtherComp->GetOwner()))
+			{
+				return MeltableActor;
+			}
+		}
+
+		return nullptr;
 	}
 }
 
@@ -99,6 +120,16 @@ void APlayerMatterState::BeginPlay()
 {
 	Super::BeginPlay();
 
+	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
+	{
+		PlayerController->CheatClass = URabbitLabCheatManager::StaticClass();
+		if (!PlayerController->CheatManager || !PlayerController->CheatManager->IsA<URabbitLabCheatManager>())
+		{
+			PlayerController->CheatManager = NewObject<URabbitLabCheatManager>(PlayerController, PlayerController->CheatClass);
+			PlayerController->CheatManager->InitCheatManager();
+		}
+	}
+
 	EnterMatterState(CurrentMatterState);
 }
 
@@ -111,6 +142,7 @@ void APlayerMatterState::Tick(float DeltaTime)
 		StateObject->UpdateState(DeltaTime);
 	}
 
+	DrawContinuousMeltableContactDebug();
 	ApplyLiquidMelt(DeltaTime);
 }
 
@@ -157,6 +189,25 @@ void APlayerMatterState::NotifyHit(
 )
 {
 	Super::NotifyHit(MyComp, Other, OtherComp, bSelfMoved, HitLocation, HitNormal, NormalImpulse, Hit);
+
+	if (AMeltableActor* MeltableActor = FindMeltableActor(Other, OtherComp))
+	{
+		const FVector ImpactPoint(Hit.ImpactPoint);
+		const FVector ImpactNormal(Hit.ImpactNormal);
+		const FVector DebugLocation = ImpactPoint.IsNearlyZero() ? HitLocation : ImpactPoint;
+		const FVector DebugNormal = ImpactNormal.IsNearlyZero() ? HitNormal : ImpactNormal;
+		ActiveDebugMeltableActor = MeltableActor;
+		ActiveDebugMeltLocation = DebugLocation;
+		ActiveDebugMeltNormal = DebugNormal;
+		if (const UWorld* World = GetWorld())
+		{
+			LastDebugMeltContactTime = World->GetTimeSeconds();
+		}
+		if (URabbitLabCheatManager::IsMeltableDebugEnabled())
+		{
+			MeltableActor->DrawMeltCollisionDebug(DebugLocation, DebugNormal, GetLiquidMeltRadius());
+		}
+	}
 
 	if (!bCanMeltObjects || !IsLiquid())
 	{
@@ -237,6 +288,43 @@ void APlayerMatterState::CycleMatterState(int32 Direction)
 	);
 
 	SetMatterState(MatterOrdinal[NextIndex]);
+}
+
+void APlayerMatterState::DrawContinuousMeltableContactDebug()
+{
+	if (!URabbitLabCheatManager::IsMeltableDebugEnabled())
+	{
+		return;
+	}
+
+	const UCharacterMovementComponent* MovementComponent = GetCharacterMovement();
+	if (MovementComponent && MovementComponent->CurrentFloor.bBlockingHit)
+	{
+		const FHitResult& FloorHit = MovementComponent->CurrentFloor.HitResult;
+		if (AMeltableActor* FloorMeltableActor = FindMeltableActor(FloorHit.GetActor(), FloorHit.GetComponent()))
+		{
+			const FVector ImpactPoint(FloorHit.ImpactPoint);
+			const FVector ImpactNormal(FloorHit.ImpactNormal);
+			FloorMeltableActor->DrawMeltCollisionDebug(
+				ImpactPoint.IsNearlyZero() ? GetActorLocation() : ImpactPoint,
+				ImpactNormal.IsNearlyZero() ? FVector::UpVector : ImpactNormal,
+				GetLiquidMeltRadius()
+			);
+			return;
+		}
+	}
+
+	const UWorld* World = GetWorld();
+	AMeltableActor* MeltableActor = ActiveDebugMeltableActor.Get();
+	if (!World || !MeltableActor)
+	{
+		return;
+	}
+
+	if (World->GetTimeSeconds() - LastDebugMeltContactTime <= 0.2f)
+	{
+		MeltableActor->DrawMeltCollisionDebug(ActiveDebugMeltLocation, ActiveDebugMeltNormal, GetLiquidMeltRadius());
+	}
 }
 
 void APlayerMatterState::ApplyLiquidMelt(float DeltaTime)

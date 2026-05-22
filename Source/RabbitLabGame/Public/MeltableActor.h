@@ -19,6 +19,8 @@ public:
 	// Sets default values for this actor's properties
 	AMeltableActor();
 
+	void DrawMeltCollisionDebug(const FVector& CollisionLocation, const FVector& CollisionNormal, float MeltRadius) const;
+
 protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
@@ -52,6 +54,12 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Meltable|Collision")
 	bool bEnableGeneratedMeshCollision = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Meltable|Debug", meta=(ClampMin="0.0", UIMin="0.0"))
+	float DebugCollisionDuration = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Meltable|Debug", meta=(ClampMin="0.0", UIMin="0.0"))
+	float DebugCollisionLineThickness = 2.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category="Meltable|Surface Nets")
 	FSurfaceNetsMesh SurfaceNetsMesh;

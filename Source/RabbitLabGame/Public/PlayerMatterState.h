@@ -21,6 +21,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
 );
 
 class APlayerMatterState;
+class AMeltableActor;
 class AMeltableSurface;
 class SolidState;
 class LiquidState;
@@ -145,6 +146,7 @@ protected:
 	void EnterMatterState(EPlayerMatterState State);
 	void ExitMatterState(EPlayerMatterState State);
 	void CycleMatterState(int32 Direction);
+	void DrawContinuousMeltableContactDebug();
 	void ApplyLiquidMelt(float DeltaTime);
 	IPlayerState* GetStateObject(EPlayerMatterState State) const;
 
@@ -157,6 +159,11 @@ protected:
 	FVector ActiveMeltNormal = FVector::UpVector;
 	float ActiveMeltAccumulatedDepth = 0.0f;
 	float LastMeltContactTime = -1.0f;
+
+	TWeakObjectPtr<AMeltableActor> ActiveDebugMeltableActor;
+	FVector ActiveDebugMeltLocation = FVector::ZeroVector;
+	FVector ActiveDebugMeltNormal = FVector::UpVector;
+	float LastDebugMeltContactTime = -1.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Input")
 	TObjectPtr<UInputAction> MatterOrdinalUpAction;
