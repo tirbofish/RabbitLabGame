@@ -9,6 +9,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/World.h"
 
 class FPositionVertexBuffer;
 
@@ -170,6 +171,12 @@ float GetSignedDistanceToMesh(const FVector& Point, const TArray<FMeshTriangle>&
 	const float Distance = static_cast<float>(FMath::Sqrt(ClosestDistanceSquared));
 	return IsPointInsideClosedMesh(Point, Triangles) ? -Distance : Distance;
 }
+
+float SmoothCraterFalloff(float Alpha)
+{
+	const float ClampedAlpha = FMath::Clamp(Alpha, 0.0f, 1.0f);
+	return ClampedAlpha * ClampedAlpha * (3.0f - 2.0f * ClampedAlpha);
+}
 }
 
 AMeltableActor::AMeltableActor()
@@ -239,6 +246,80 @@ void AMeltableActor::DrawMeltCollisionDebug(
 	);
 }
 
+void AMeltableActor::ApplyMeltCrater(
+	const FVector& CollisionLocation,
+	const FVector& CollisionNormal,
+	float MeltRadius,
+	float MeltAmount
+)
+{
+	if (ScalarFieldValues.IsEmpty() || MeltRadius <= 0.0f || MeltAmount <= 0.0f)
+	{
+		return;
+	}
+
+	const FVector Normal = CollisionNormal.IsNearlyZero() ? FVector::UpVector : CollisionNormal.GetSafeNormal();
+	const FVector CraterCenter = CollisionLocation - Normal * (MeltRadius * 0.5f);
+	const float RadiusSquared = FMath::Square(MeltRadius);
+	bool bChangedScalarField = false;
+
+	for (int32 Z = 0; Z <= SurfaceNetsGrid.VoxelCountZ; ++Z)
+	{
+		for (int32 Y = 0; Y <= SurfaceNetsGrid.VoxelCountY; ++Y)
+		{
+			for (int32 X = 0; X <= SurfaceNetsGrid.VoxelCountX; ++X)
+			{
+				const FVector WorldPoint =
+					SurfaceNetsGrid.Origin +
+					FVector(
+						X * SurfaceNetsGrid.CellSize.X,
+						Y * SurfaceNetsGrid.CellSize.Y,
+						Z * SurfaceNetsGrid.CellSize.Z
+					);
+
+				const float DistanceSquared = FVector::DistSquared(WorldPoint, CraterCenter);
+				if (DistanceSquared > RadiusSquared)
+				{
+					continue;
+				}
+
+				const int32 Index = USurfaceNetsBlueprintLibrary::GetSurfaceNetsScalarFieldIndex(
+					X,
+					Y,
+					Z,
+					SurfaceNetsGrid
+				);
+
+				if (!ScalarFieldValues.IsValidIndex(Index))
+				{
+					continue;
+				}
+
+				const float Distance = FMath::Sqrt(DistanceSquared);
+				const float Alpha = 1.0f - (Distance / MeltRadius);
+				const float Falloff = SmoothCraterFalloff(Alpha);
+				ScalarFieldValues[Index] += MeltAmount * Falloff;
+				bChangedScalarField = true;
+			}
+		}
+	}
+
+	if (!bChangedScalarField)
+	{
+		return;
+	}
+
+	const UWorld* World = GetWorld();
+	const double CurrentTime = World ? World->GetTimeSeconds() : 0.0;
+	if (LastMeltRegenerationTime < 0.0 || CurrentTime - LastMeltRegenerationTime >= MeltRegenerationInterval)
+	{
+		if (RegenerateSurfaceNetsMesh())
+		{
+			LastMeltRegenerationTime = CurrentTime;
+		}
+	}
+}
+
 void AMeltableActor::BeginPlay()
 {
 	Super::BeginPlay();
@@ -248,9 +329,22 @@ void AMeltableActor::BeginPlay()
 		AutoFitSurfaceNetsGridToSourceMesh();
 	}
 
-	TArray<float> ScalarFieldValues;
 	BuildScalarFieldFromStaticMesh(ScalarFieldValues);
 
+	if (!RegenerateSurfaceNetsMesh())
+	{
+		return;
+	}
+
+	if (bHideSourceMeshAfterConversion && SourceMeshComponent && GeneratedMeshComponent && GeneratedMeshComponent->GetNumSections() > 0)
+	{
+		SourceMeshComponent->SetVisibility(false, false);
+		SourceMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+}
+
+bool AMeltableActor::RegenerateSurfaceNetsMesh()
+{
 	const bool bGeneratedMesh = USurfaceNetsBlueprintLibrary::GenerateSurfaceNetsMesh(
 		SurfaceNetsGrid,
 		ScalarFieldValues,
@@ -268,16 +362,11 @@ void AMeltableActor::BeginPlay()
 			ScalarFieldValues.Num(),
 			USurfaceNetsBlueprintLibrary::GetSurfaceNetsScalarFieldValueCount(SurfaceNetsGrid)
 		);
-		return;
+		return false;
 	}
 
 	UpdateGeneratedMesh();
-
-	if (bHideSourceMeshAfterConversion && SourceMeshComponent && GeneratedMeshComponent && GeneratedMeshComponent->GetNumSections() > 0)
-	{
-		SourceMeshComponent->SetVisibility(false, false);
-		SourceMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	}
+	return true;
 }
 
 void AMeltableActor::AutoFitSurfaceNetsGridToSourceMesh()
@@ -331,9 +420,9 @@ void AMeltableActor::AutoFitSurfaceNetsGridToSourceMesh()
 	);
 }
 
-void AMeltableActor::BuildScalarFieldFromStaticMesh(TArray<float>& ScalarFieldValues)
+void AMeltableActor::BuildScalarFieldFromStaticMesh(TArray<float>& OutScalarFieldValues)
 {
-	ScalarFieldValues.Reset();
+	OutScalarFieldValues.Reset();
 
 	if (!SourceMeshComponent)
 	{
@@ -351,7 +440,7 @@ void AMeltableActor::BuildScalarFieldFromStaticMesh(TArray<float>& ScalarFieldVa
 	const int32 ValueCount =
 		USurfaceNetsBlueprintLibrary::GetSurfaceNetsScalarFieldValueCount(SurfaceNetsGrid);
 
-	ScalarFieldValues.SetNumZeroed(ValueCount);
+	OutScalarFieldValues.SetNumZeroed(ValueCount);
 
 	bool bHasNegativeSample = false;
 	bool bHasPositiveSample = false;
@@ -379,7 +468,7 @@ void AMeltableActor::BuildScalarFieldFromStaticMesh(TArray<float>& ScalarFieldVa
 					);
 
 				const float SignedDistance = GetSignedDistanceToMesh(WorldPoint, Triangles);
-				ScalarFieldValues[Index] = SignedDistance;
+				OutScalarFieldValues[Index] = SignedDistance;
 
 				bHasNegativeSample |= SignedDistance < SurfaceNetsIsovalue;
 				bHasPositiveSample |= SignedDistance >= SurfaceNetsIsovalue;

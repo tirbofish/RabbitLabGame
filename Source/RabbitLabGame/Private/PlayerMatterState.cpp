@@ -290,12 +290,15 @@ void APlayerMatterState::CycleMatterState(int32 Direction)
 	SetMatterState(MatterOrdinal[NextIndex]);
 }
 
-void APlayerMatterState::DrawContinuousMeltableContactDebug()
+bool APlayerMatterState::GetCurrentMeltableContact(
+	AMeltableActor*& OutMeltableActor,
+	FVector& OutLocation,
+	FVector& OutNormal
+) const
 {
-	if (!URabbitLabCheatManager::IsMeltableDebugEnabled())
-	{
-		return;
-	}
+	OutMeltableActor = nullptr;
+	OutLocation = FVector::ZeroVector;
+	OutNormal = FVector::UpVector;
 
 	const UCharacterMovementComponent* MovementComponent = GetCharacterMovement();
 	if (MovementComponent && MovementComponent->CurrentFloor.bBlockingHit)
@@ -305,12 +308,10 @@ void APlayerMatterState::DrawContinuousMeltableContactDebug()
 		{
 			const FVector ImpactPoint(FloorHit.ImpactPoint);
 			const FVector ImpactNormal(FloorHit.ImpactNormal);
-			FloorMeltableActor->DrawMeltCollisionDebug(
-				ImpactPoint.IsNearlyZero() ? GetActorLocation() : ImpactPoint,
-				ImpactNormal.IsNearlyZero() ? FVector::UpVector : ImpactNormal,
-				GetLiquidMeltRadius()
-			);
-			return;
+			OutMeltableActor = FloorMeltableActor;
+			OutLocation = ImpactPoint.IsNearlyZero() ? GetActorLocation() : ImpactPoint;
+			OutNormal = ImpactNormal.IsNearlyZero() ? FVector::UpVector : ImpactNormal;
+			return true;
 		}
 	}
 
@@ -318,12 +319,33 @@ void APlayerMatterState::DrawContinuousMeltableContactDebug()
 	AMeltableActor* MeltableActor = ActiveDebugMeltableActor.Get();
 	if (!World || !MeltableActor)
 	{
-		return;
+		return false;
 	}
 
 	if (World->GetTimeSeconds() - LastDebugMeltContactTime <= 0.2f)
 	{
-		MeltableActor->DrawMeltCollisionDebug(ActiveDebugMeltLocation, ActiveDebugMeltNormal, GetLiquidMeltRadius());
+		OutMeltableActor = MeltableActor;
+		OutLocation = ActiveDebugMeltLocation;
+		OutNormal = ActiveDebugMeltNormal.IsNearlyZero() ? FVector::UpVector : ActiveDebugMeltNormal;
+		return true;
+	}
+
+	return false;
+}
+
+void APlayerMatterState::DrawContinuousMeltableContactDebug()
+{
+	if (!URabbitLabCheatManager::IsMeltableDebugEnabled())
+	{
+		return;
+	}
+
+	AMeltableActor* MeltableActor = nullptr;
+	FVector ContactLocation = FVector::ZeroVector;
+	FVector ContactNormal = FVector::UpVector;
+	if (GetCurrentMeltableContact(MeltableActor, ContactLocation, ContactNormal) && MeltableActor)
+	{
+		MeltableActor->DrawMeltCollisionDebug(ContactLocation, ContactNormal, GetLiquidMeltRadius());
 	}
 }
 
@@ -334,21 +356,27 @@ void APlayerMatterState::ApplyLiquidMelt(float DeltaTime)
 		return;
 	}
 
-	AMeltableSurface* MeltableSurface = ActiveMeltableSurface.Get();
-	if (!MeltableSurface)
+	AMeltableActor* MeltableActor = nullptr;
+	FVector ContactLocation = FVector::ZeroVector;
+	FVector ContactNormal = FVector::UpVector;
+	if (!GetCurrentMeltableContact(MeltableActor, ContactLocation, ContactNormal) || !MeltableActor)
 	{
 		return;
 	}
 
 	const UWorld* World = GetWorld();
-	if (!World || World->GetTimeSeconds() - LastMeltContactTime > 0.3f)
+	if (!World)
 	{
-		ActiveMeltableSurface.Reset();
-		ActiveMeltAccumulatedDepth = 0.0f;
 		return;
 	}
-	
-	return;
+
+	LastMeltContactTime = World->GetTimeSeconds();
+	MeltableActor->ApplyMeltCrater(
+		ContactLocation,
+		ContactNormal,
+		GetLiquidMeltRadius(),
+		GetLiquidMeltRate() * DeltaTime
+	);
 }
 
 IPlayerState* APlayerMatterState::GetStateObject(EPlayerMatterState State) const

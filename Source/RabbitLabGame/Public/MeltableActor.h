@@ -20,6 +20,7 @@ public:
 	AMeltableActor();
 
 	void DrawMeltCollisionDebug(const FVector& CollisionLocation, const FVector& CollisionNormal, float MeltRadius) const;
+	void ApplyMeltCrater(const FVector& CollisionLocation, const FVector& CollisionNormal, float MeltRadius, float MeltAmount);
 
 protected:
 	// Called when the game starts or when spawned
@@ -55,6 +56,9 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Meltable|Collision")
 	bool bEnableGeneratedMeshCollision = true;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Meltable|Melting", meta=(ClampMin="0.0", UIMin="0.0"))
+	float MeltRegenerationInterval = 0.05f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Meltable|Debug", meta=(ClampMin="0.0", UIMin="0.0"))
 	float DebugCollisionDuration = 1.0f;
 
@@ -66,6 +70,12 @@ protected:
 
 private:
 	void AutoFitSurfaceNetsGridToSourceMesh();
-	void BuildScalarFieldFromStaticMesh(TArray<float>& ScalarFieldValues);
+	void BuildScalarFieldFromStaticMesh(TArray<float>& OutScalarFieldValues);
+	bool RegenerateSurfaceNetsMesh();
 	void UpdateGeneratedMesh();
+
+	UPROPERTY()
+	TArray<float> ScalarFieldValues;
+
+	double LastMeltRegenerationTime = -1.0;
 };

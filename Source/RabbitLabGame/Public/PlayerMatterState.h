@@ -146,6 +146,7 @@ protected:
 	void EnterMatterState(EPlayerMatterState State);
 	void ExitMatterState(EPlayerMatterState State);
 	void CycleMatterState(int32 Direction);
+	bool GetCurrentMeltableContact(AMeltableActor*& OutMeltableActor, FVector& OutLocation, FVector& OutNormal) const;
 	void DrawContinuousMeltableContactDebug();
 	void ApplyLiquidMelt(float DeltaTime);
 	IPlayerState* GetStateObject(EPlayerMatterState State) const;
