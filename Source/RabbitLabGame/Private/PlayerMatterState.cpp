@@ -7,68 +7,30 @@
 #include "GasState.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "LiquidState.h"
-#include "MeltableSurface.h"
 #include "SolidState.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace
 {
-constexpr EPlayerMatterState MatterOrdinal[] =
-{
-	EPlayerMatterState::Liquid,
-	EPlayerMatterState::Solid,
-	EPlayerMatterState::Gas,
-};
-
-int32 FindMatterOrdinalIndex(EPlayerMatterState State)
-{
-	for (int32 Index = 0; Index < UE_ARRAY_COUNT(MatterOrdinal); ++Index)
+	constexpr EPlayerMatterState MatterOrdinal[] =
 	{
-		if (MatterOrdinal[Index] == State)
+		EPlayerMatterState::Liquid,
+		EPlayerMatterState::Solid,
+		EPlayerMatterState::Gas,
+	};
+
+	int32 FindMatterOrdinalIndex(EPlayerMatterState State)
+	{
+		for (int32 Index = 0; Index < UE_ARRAY_COUNT(MatterOrdinal); ++Index)
 		{
-			return Index;
-		}
-	}
-
-	return 0;
-}
-
-AMeltableSurface* FindMeltableSurface(AActor* Other, UPrimitiveComponent* OtherComp)
-{
-	if (AMeltableSurface* MeltableSurface = Cast<AMeltableSurface>(Other))
-	{
-		return MeltableSurface;
-	}
-
-	if (OtherComp)
-	{
-		if (AMeltableSurface* MeltableSurface = Cast<AMeltableSurface>(OtherComp->GetOwner()))
-		{
-			return MeltableSurface;
-		}
-	}
-
-	if (Other)
-	{
-		TArray<UChildActorComponent*> ChildActorComponents;
-		Other->GetComponents<UChildActorComponent>(ChildActorComponents);
-
-		for (UChildActorComponent* ChildActorComponent : ChildActorComponents)
-		{
-			if (!ChildActorComponent)
+			if (MatterOrdinal[Index] == State)
 			{
-				continue;
-			}
-
-			if (AMeltableSurface* MeltableSurface = Cast<AMeltableSurface>(ChildActorComponent->GetChildActor()))
-			{
-				return MeltableSurface;
+				return Index;
 			}
 		}
-	}
 
-	return nullptr;
-}
+		return 0;
+	}
 }
 
 void IPlayerState::Initialize(APlayerMatterState* InOwner, EPlayerMatterState InState)
@@ -201,20 +163,12 @@ void APlayerMatterState::NotifyHit(
 		return;
 	}
 
-	AMeltableSurface* MeltableSurface = FindMeltableSurface(Other, OtherComp);
-	if (!MeltableSurface)
-	{
-		return;
-	}
-
 	const UWorld* World = GetWorld();
 	if (!World)
 	{
 		return;
 	}
-
-	// Only update the target surface reference - actual melting happens via trace in ApplyLiquidMelt
-	ActiveMeltableSurface = MeltableSurface;
+	
 	LastMeltContactTime = World->GetTimeSeconds();
 }
 
@@ -305,49 +259,8 @@ void APlayerMatterState::ApplyLiquidMelt(float DeltaTime)
 		ActiveMeltAccumulatedDepth = 0.0f;
 		return;
 	}
-
-	// Use a sphere trace downward from the player's center to find the exact melt point
-	// This avoids the instability of using NotifyHit locations during physics resolution
-	const FVector TraceStart = GetActorLocation();
-	const FVector TraceEnd = TraceStart - FVector(0.0f, 0.0f, LiquidMeltTraceDistance);
-
-	FHitResult TraceHit;
-	FCollisionQueryParams QueryParams;
-	QueryParams.AddIgnoredActor(this);
-
-	const bool bHit = World->SweepSingleByChannel(
-		TraceHit,
-		TraceStart,
-		TraceEnd,
-		FQuat::Identity,
-		ECC_Visibility,
-		FCollisionShape::MakeSphere(LiquidMeltRadius * 0.25f),
-		QueryParams
-	);
-
-	if (!bHit || TraceHit.GetActor() != MeltableSurface)
-	{
-		return;
-	}
-
-	const FVector HitLocation = TraceHit.ImpactPoint;
-	const bool bSameSpot = FVector::DistSquared(ActiveMeltLocation, HitLocation) <= FMath::Square(LiquidMeltRadius * 0.5f);
-
-	if (!bSameSpot)
-	{
-		ActiveMeltAccumulatedDepth = 0.0f;
-	}
-
-	ActiveMeltLocation = HitLocation;
-	ActiveMeltNormal = TraceHit.ImpactNormal;
-	ActiveMeltAccumulatedDepth += LiquidMeltRate * DeltaTime;
-
-	// Apply a spherical crater - radius grows slightly with accumulated depth for sinking effect
-	const float EffectiveRadius = LiquidMeltRadius + ActiveMeltAccumulatedDepth * 0.1f;
-	MeltableSurface->ApplySphericalCrater(
-		ActiveMeltLocation,
-		FMath::Min(EffectiveRadius, LiquidMeltRadius * 2.0f)
-	);
+	
+	return;
 }
 
 IPlayerState* APlayerMatterState::GetStateObject(EPlayerMatterState State) const

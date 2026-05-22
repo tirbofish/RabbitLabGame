@@ -17,7 +17,7 @@ public class RabbitLabGame : ModuleRules
 			"InputCore",
 			"EnhancedInput",
 			"GeometryCore",
-			"GeometryFramework"
+			"GeometryFramework", "ProceduralMeshComponent"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });

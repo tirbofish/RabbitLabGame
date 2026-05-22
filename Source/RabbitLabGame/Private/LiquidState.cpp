@@ -1,6 +1,6 @@
 #include "LiquidState.h"
 
-#include "MeltableSurface.h"
+#include "MeltableActor.h"
 #include "Engine/Engine.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
