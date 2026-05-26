@@ -1,7 +1,9 @@
 #include "PlayerMatterState.h"
 
+#include "Components/BoxComponent.h"
 #include "Components/ChildActorComponent.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "EnhancedInputComponent.h"
 #include "Engine/World.h"
 #include "GasState.h"
@@ -9,6 +11,7 @@
 #include "GameFramework/PlayerController.h"
 #include "LiquidState.h"
 #include "MeltableActor.h"
+#include "PushableActor.h"
 #include "RabbitLabCheatManager.h"
 #include "SolidState.h"
 #include "UObject/ConstructorHelpers.h"
@@ -190,6 +193,8 @@ void APlayerMatterState::NotifyHit(
 {
 	Super::NotifyHit(MyComp, Other, OtherComp, bSelfMoved, HitLocation, HitNormal, NormalImpulse, Hit);
 
+	ApplySolidPushNudge(Other, OtherComp, Hit);
+
 	if (AMeltableActor* MeltableActor = FindMeltableActor(Other, OtherComp))
 	{
 		const FVector ImpactPoint(Hit.ImpactPoint);
@@ -268,6 +273,8 @@ void APlayerMatterState::EnterMatterState(EPlayerMatterState State)
 	{
 		StateObject->EnterState();
 	}
+
+	ConfigurePhysicsInteractionForCurrentState();
 }
 
 void APlayerMatterState::ExitMatterState(EPlayerMatterState State)
@@ -377,6 +384,70 @@ void APlayerMatterState::ApplyLiquidMelt(float DeltaTime)
 		GetLiquidMeltRadius(),
 		GetLiquidMeltRate() * DeltaTime
 	);
+}
+
+void APlayerMatterState::ConfigurePhysicsInteractionForCurrentState()
+{
+	UCharacterMovementComponent* MovementComponent = GetCharacterMovement();
+	if (!MovementComponent)
+	{
+		return;
+	}
+
+	const bool bCanPushInCurrentState = IsSolid() && bSolidCanPushPhysicsObjects;
+	MovementComponent->bEnablePhysicsInteraction = bCanPushInCurrentState;
+	MovementComponent->InitialPushForceFactor = bCanPushInCurrentState ? SolidInitialPushForceFactor : 0.0f;
+	MovementComponent->PushForceFactor = bCanPushInCurrentState ? SolidPushForceFactor : 0.0f;
+	MovementComponent->TouchForceFactor = bCanPushInCurrentState ? SolidPushTouchForceFactor : 0.0f;
+	MovementComponent->MinTouchForce = 0.0f;
+	MovementComponent->MaxTouchForce = bCanPushInCurrentState ? SolidPushForceFactor : 0.0f;
+	MovementComponent->bPushForceScaledToMass = false;
+	MovementComponent->bTouchForceScaledToMass = false;
+	MovementComponent->bPushForceUsingZOffset = false;
+	MovementComponent->bScalePushForceToVelocity = true;
+}
+
+void APlayerMatterState::ApplySolidPushNudge(AActor* Other, UPrimitiveComponent* OtherComp, const FHitResult& Hit)
+{
+	if (!bSolidCanPushPhysicsObjects || !IsSolid() || SolidPushNudgeVelocity <= 0.0f)
+	{
+		return;
+	}
+
+	const APushableActor* PushableActor = Cast<APushableActor>(Other);
+	if (!PushableActor && OtherComp)
+	{
+		PushableActor = Cast<APushableActor>(OtherComp->GetOwner());
+	}
+
+	if (!PushableActor)
+	{
+		return;
+	}
+
+	UPrimitiveComponent* PushableComponent = OtherComp;
+	if (!PushableComponent || !PushableComponent->IsSimulatingPhysics(Hit.BoneName))
+	{
+		PushableComponent = PushableActor->GetPushableMesh();
+	}
+
+	if (!PushableComponent || !PushableComponent->IsSimulatingPhysics(Hit.BoneName))
+	{
+		return;
+	}
+
+	FVector PushDirection = GetVelocity();
+	PushDirection.Z = 0.0f;
+	if (PushDirection.IsNearlyZero())
+	{
+		PushDirection = -Hit.ImpactNormal;
+		PushDirection.Z = 0.0f;
+	}
+
+	if (PushDirection.Normalize())
+	{
+		PushableComponent->AddImpulse(PushDirection * SolidPushNudgeVelocity, Hit.BoneName, true);
+	}
 }
 
 IPlayerState* APlayerMatterState::GetStateObject(EPlayerMatterState State) const

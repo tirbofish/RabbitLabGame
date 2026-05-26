@@ -59,6 +59,12 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Meltable|Melting", meta=(ClampMin="0.0", UIMin="0.0"))
 	float MeltRegenerationInterval = 0.05f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Meltable|Melting")
+	bool bMeltThroughSurface = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Meltable|Melting", meta=(ClampMin="1.0", UIMin="1.0"))
+	float MeltThroughDepthMultiplier = 4.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Meltable|Debug", meta=(ClampMin="0.0", UIMin="0.0"))
 	float DebugCollisionDuration = 1.0f;
 
@@ -71,6 +77,8 @@ protected:
 private:
 	void AutoFitSurfaceNetsGridToSourceMesh();
 	void BuildScalarFieldFromStaticMesh(TArray<float>& OutScalarFieldValues);
+	void DisableSourceMeshAfterConversion();
+	float GetMeltThroughDepth(const FVector& SurfaceNormal, float MeltRadius) const;
 	bool RegenerateSurfaceNetsMesh();
 	void UpdateGeneratedMesh();
 

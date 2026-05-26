@@ -113,6 +113,21 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Matter State|Solid")
 	float SolidJumpVelocity = 700.0f;
 
+	UPROPERTY(EditAnywhere, Category="Matter State|Solid|Pushing")
+	bool bSolidCanPushPhysicsObjects = true;
+
+	UPROPERTY(EditAnywhere, Category="Matter State|Solid|Pushing", meta=(ClampMin="0.0", UIMin="0.0"))
+	float SolidInitialPushForceFactor = 350.0f;
+
+	UPROPERTY(EditAnywhere, Category="Matter State|Solid|Pushing", meta=(ClampMin="0.0", UIMin="0.0"))
+	float SolidPushForceFactor = 750000.0f;
+
+	UPROPERTY(EditAnywhere, Category="Matter State|Solid|Pushing", meta=(ClampMin="0.0", UIMin="0.0"))
+	float SolidPushTouchForceFactor = 0.0f;
+
+	UPROPERTY(EditAnywhere, Category="Matter State|Solid|Pushing", meta=(ClampMin="0.0", UIMin="0.0"))
+	float SolidPushNudgeVelocity = 45.0f;
+
 	UPROPERTY(EditAnywhere, Category="Matter State|Liquid")
 	float LiquidWalkSpeed = 420.0f;
 
@@ -149,6 +164,8 @@ protected:
 	bool GetCurrentMeltableContact(AMeltableActor*& OutMeltableActor, FVector& OutLocation, FVector& OutNormal) const;
 	void DrawContinuousMeltableContactDebug();
 	void ApplyLiquidMelt(float DeltaTime);
+	void ConfigurePhysicsInteractionForCurrentState();
+	void ApplySolidPushNudge(AActor* Other, UPrimitiveComponent* OtherComp, const FHitResult& Hit);
 	IPlayerState* GetStateObject(EPlayerMatterState State) const;
 
 	TUniquePtr<IPlayerState> SolidStateObject;

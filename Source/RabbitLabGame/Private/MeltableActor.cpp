@@ -260,6 +260,8 @@ void AMeltableActor::ApplyMeltCrater(
 
 	const FVector Normal = CollisionNormal.IsNearlyZero() ? FVector::UpVector : CollisionNormal.GetSafeNormal();
 	const FVector CraterCenter = CollisionLocation - Normal * (MeltRadius * 0.5f);
+	const FVector MeltSegmentStart = CollisionLocation + Normal * (MeltRadius * 0.25f);
+	const FVector MeltSegmentEnd = CollisionLocation - Normal * GetMeltThroughDepth(Normal, MeltRadius);
 	const float RadiusSquared = FMath::Square(MeltRadius);
 	bool bChangedScalarField = false;
 
@@ -277,7 +279,9 @@ void AMeltableActor::ApplyMeltCrater(
 						Z * SurfaceNetsGrid.CellSize.Z
 					);
 
-				const float DistanceSquared = FVector::DistSquared(WorldPoint, CraterCenter);
+				const float DistanceSquared = bMeltThroughSurface
+					? FMath::PointDistToSegmentSquared(WorldPoint, MeltSegmentStart, MeltSegmentEnd)
+					: FVector::DistSquared(WorldPoint, CraterCenter);
 				if (DistanceSquared > RadiusSquared)
 				{
 					continue;
@@ -336,11 +340,7 @@ void AMeltableActor::BeginPlay()
 		return;
 	}
 
-	if (bHideSourceMeshAfterConversion && SourceMeshComponent && GeneratedMeshComponent && GeneratedMeshComponent->GetNumSections() > 0)
-	{
-		SourceMeshComponent->SetVisibility(false, false);
-		SourceMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	}
+	DisableSourceMeshAfterConversion();
 }
 
 bool AMeltableActor::RegenerateSurfaceNetsMesh()
@@ -418,6 +418,35 @@ void AMeltableActor::AutoFitSurfaceNetsGridToSourceMesh()
 		SurfaceNetsGrid.VoxelCountZ,
 		bAddOuterVoxelPadding ? TEXT("yes") : TEXT("no")
 	);
+}
+
+void AMeltableActor::DisableSourceMeshAfterConversion()
+{
+	if (!bHideSourceMeshAfterConversion ||
+		!SourceMeshComponent ||
+		!GeneratedMeshComponent ||
+		GeneratedMeshComponent->GetNumSections() <= 0)
+	{
+		return;
+	}
+
+	SourceMeshComponent->SetVisibility(false, false);
+	SourceMeshComponent->SetHiddenInGame(true, false);
+	SourceMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	SourceMeshComponent->SetGenerateOverlapEvents(false);
+}
+
+float AMeltableActor::GetMeltThroughDepth(const FVector& SurfaceNormal, float MeltRadius) const
+{
+	const FVector Normal = SurfaceNormal.IsNearlyZero() ? FVector::UpVector : SurfaceNormal.GetSafeNormal();
+	const FVector AbsNormal(FMath::Abs(Normal.X), FMath::Abs(Normal.Y), FMath::Abs(Normal.Z));
+	const FBox Bounds = SourceMeshComponent ? SourceMeshComponent->Bounds.GetBox() : GetComponentsBoundingBox(true);
+	const FVector Extent = Bounds.GetExtent();
+	const float ProjectedThickness =
+		2.0f * (AbsNormal.X * Extent.X + AbsNormal.Y * Extent.Y + AbsNormal.Z * Extent.Z);
+	const float MinimumDepth = MeltRadius * FMath::Max(1.0f, MeltThroughDepthMultiplier);
+
+	return FMath::Max(ProjectedThickness + MeltRadius, MinimumDepth);
 }
 
 void AMeltableActor::BuildScalarFieldFromStaticMesh(TArray<float>& OutScalarFieldValues)
@@ -501,6 +530,8 @@ void AMeltableActor::UpdateGeneratedMesh()
 
 	if (SurfaceNetsMesh.Vertices.IsEmpty() || SurfaceNetsMesh.Triangles.Num() < 3)
 	{
+		GeneratedMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		GeneratedMeshComponent->RecreatePhysicsState();
 		return;
 	}
 
@@ -545,6 +576,7 @@ void AMeltableActor::UpdateGeneratedMesh()
 	GeneratedMeshComponent->SetCollisionObjectType(ECC_WorldStatic);
 	GeneratedMeshComponent->SetCollisionResponseToAllChannels(ECR_Block);
 	GeneratedMeshComponent->CanCharacterStepUpOn = ECB_Yes;
+	GeneratedMeshComponent->RecreatePhysicsState();
 
 	if (SourceMeshComponent)
 	{
