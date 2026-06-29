@@ -9,12 +9,15 @@
 #include "GasState.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
+#include "InputCoreTypes.h"
 #include "LiquidState.h"
 #include "MeltableActor.h"
 #include "PushableActor.h"
 #include "RabbitLabCheatManager.h"
 #include "SolidState.h"
 #include "UObject/ConstructorHelpers.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogRabbitVitals, Log, All);
 
 namespace
 {
@@ -67,7 +70,7 @@ void IPlayerState::SwitchToState()
 {
 	if (Owner)
 	{
-		Owner->SetMatterState(StateType);
+		Owner->RequestMatterStateChange(StateType);
 	}
 }
 
@@ -115,9 +118,24 @@ APlayerMatterState::APlayerMatterState()
 	{
 		MatterOrdinalDownAction = MatterOrdinalDownAsset.Object;
 	}
+
+	static ConstructorHelpers::FObjectFinder<UInputAction> HealAsset(
+		TEXT("/Game/Input/Actions/IA_Heal.IA_Heal")
+	);
+	if (HealAsset.Succeeded())
+	{
+		HealAction = HealAsset.Object;
+	}
 }
 
-APlayerMatterState::~APlayerMatterState() = default;
+APlayerMatterState::~APlayerMatterState()
+{
+	// Live Coding can leave these non-UObject state helpers allocated by an older patch module.
+	// Detach them instead of virtual-deleting through a stale patch boundary during actor teardown.
+	(void)SolidStateObject.Release();
+	(void)LiquidStateObject.Release();
+	(void)GasStateObject.Release();
+}
 
 void APlayerMatterState::BeginPlay()
 {
@@ -133,6 +151,8 @@ void APlayerMatterState::BeginPlay()
 		}
 	}
 
+	ClampVitals();
+	BroadcastVitalsChanged();
 	EnterMatterState(CurrentMatterState);
 }
 
@@ -147,6 +167,9 @@ void APlayerMatterState::Tick(float DeltaTime)
 
 	DrawContinuousMeltableContactDebug();
 	ApplyLiquidMelt(DeltaTime);
+	ApplyGasEnergyDrain(DeltaTime);
+	ApplyLiquidEnergyDepletionRule();
+	ApplyHealKeyFallback();
 }
 
 void APlayerMatterState::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -176,6 +199,16 @@ void APlayerMatterState::SetupPlayerInputComponent(UInputComponent* PlayerInputC
 			ETriggerEvent::Started,
 			this,
 			&APlayerMatterState::MatterOrdinalDown
+		);
+	}
+
+	if (HealAction)
+	{
+		EnhancedInput->BindAction(
+			HealAction,
+			ETriggerEvent::Triggered,
+			this,
+			&APlayerMatterState::RestoreEnergyFromHealth
 		);
 	}
 }
@@ -242,19 +275,36 @@ void APlayerMatterState::SetMatterState(EPlayerMatterState NewState)
 	OnMatterStateChanged.Broadcast(CurrentMatterState);
 }
 
+bool APlayerMatterState::RequestMatterStateChange(EPlayerMatterState NewState)
+{
+	if (CurrentMatterState == NewState)
+	{
+		return true;
+	}
+
+	if (EnergyPoints <= 0.0f)
+	{
+		return false;
+	}
+
+	ConsumeEnergy(MatterStateChangeEnergyCost);
+	SetMatterState(NewState);
+	return true;
+}
+
 void APlayerMatterState::SwitchToSolid()
 {
-	SetMatterState(EPlayerMatterState::Solid);
+	RequestMatterStateChange(EPlayerMatterState::Solid);
 }
 
 void APlayerMatterState::SwitchToLiquid()
 {
-	SetMatterState(EPlayerMatterState::Liquid);
+	RequestMatterStateChange(EPlayerMatterState::Liquid);
 }
 
 void APlayerMatterState::SwitchToGas()
 {
-	SetMatterState(EPlayerMatterState::Gas);
+	RequestMatterStateChange(EPlayerMatterState::Gas);
 }
 
 void APlayerMatterState::MatterOrdinalUp()
@@ -294,7 +344,210 @@ void APlayerMatterState::CycleMatterState(int32 Direction)
 		static_cast<int32>(UE_ARRAY_COUNT(MatterOrdinal)) - 1
 	);
 
-	SetMatterState(MatterOrdinal[NextIndex]);
+	RequestMatterStateChange(MatterOrdinal[NextIndex]);
+}
+
+void APlayerMatterState::RestoreEnergyFromHealth()
+{
+	const UWorld* World = GetWorld();
+	const float CurrentTime = World ? World->GetTimeSeconds() : -1.0f;
+	if (CurrentTime >= 0.0f && FMath::IsNearlyEqual(CurrentTime, LastEnergyRestoreAppliedTime))
+	{
+		return;
+	}
+
+	if (EnergyRestoreRate <= 0.0f || EnergyRestoredPerHealthSpent <= 0.0f)
+	{
+		UE_LOG(
+			LogRabbitVitals,
+			Warning,
+			TEXT("Energy restore skipped: invalid tuning values. EnergyRestoreRate=%.2f EnergyRestoredPerHealthSpent=%.2f"),
+			EnergyRestoreRate,
+			EnergyRestoredPerHealthSpent
+		);
+		return;
+	}
+
+	if (EnergyPoints >= MaxEnergyPoints)
+	{
+		UE_LOG(LogRabbitVitals, Log, TEXT("Energy restore skipped: EP already full at %.2f/%.2f."), EnergyPoints, MaxEnergyPoints);
+		return;
+	}
+
+	if (HealthPoints <= 0.0f)
+	{
+		UE_LOG(LogRabbitVitals, Log, TEXT("Energy restore skipped: no HP available. EP %.2f/%.2f."), EnergyPoints, MaxEnergyPoints);
+		return;
+	}
+
+	const float DeltaTime = World ? World->GetDeltaSeconds() : 0.0f;
+	if (DeltaTime <= 0.0f)
+	{
+		UE_LOG(LogRabbitVitals, Verbose, TEXT("Energy restore skipped: invalid DeltaTime %.4f."), DeltaTime);
+		return;
+	}
+
+	const float RequestedEnergy = EnergyRestoreRate * DeltaTime;
+	const float MissingEnergy = FMath::Max(0.0f, MaxEnergyPoints - EnergyPoints);
+	const float AffordableEnergy = HealthPoints * EnergyRestoredPerHealthSpent;
+	const float EnergyToRestore = FMath::Min(RequestedEnergy, FMath::Min(MissingEnergy, AffordableEnergy));
+
+	if (EnergyToRestore <= 0.0f)
+	{
+		UE_LOG(
+			LogRabbitVitals,
+			Log,
+			TEXT("Energy restore skipped: calculated restore amount was zero. HP %.2f/%.2f, EP %.2f/%.2f."),
+			HealthPoints,
+			MaxHealthPoints,
+			EnergyPoints,
+			MaxEnergyPoints
+		);
+		return;
+	}
+
+	const float HealthToSpend = EnergyToRestore / EnergyRestoredPerHealthSpent;
+	const float PreviousHealth = HealthPoints;
+	const float PreviousEnergy = EnergyPoints;
+	HealthPoints = FMath::Clamp(HealthPoints - HealthToSpend, 0.0f, MaxHealthPoints);
+	EnergyPoints = FMath::Clamp(EnergyPoints + EnergyToRestore, 0.0f, MaxEnergyPoints);
+	LastEnergyRestoreAppliedTime = CurrentTime;
+	UE_LOG(
+		LogRabbitVitals,
+		Log,
+		TEXT("Energy restored: HP %.2f -> %.2f / %.2f, EP %.2f -> %.2f / %.2f."),
+		PreviousHealth,
+		HealthPoints,
+		MaxHealthPoints,
+		PreviousEnergy,
+		EnergyPoints,
+		MaxEnergyPoints
+	);
+	BroadcastVitalsChanged();
+}
+
+bool APlayerMatterState::ConsumeEnergy(float Amount)
+{
+	if (Amount <= 0.0f)
+	{
+		return true;
+	}
+
+	const float PreviousEnergy = EnergyPoints;
+	EnergyPoints = FMath::Clamp(EnergyPoints - Amount, 0.0f, MaxEnergyPoints);
+
+	if (!FMath::IsNearlyEqual(PreviousEnergy, EnergyPoints))
+	{
+		BroadcastVitalsChanged();
+	}
+
+	return EnergyPoints > 0.0f;
+}
+
+void APlayerMatterState::AddHealth(float Amount)
+{
+	if (Amount <= 0.0f)
+	{
+		return;
+	}
+
+	HealthPoints = FMath::Clamp(HealthPoints + Amount, 0.0f, MaxHealthPoints);
+}
+
+void APlayerMatterState::ClampVitals()
+{
+	MaxHealthPoints = FMath::Max(1.0f, MaxHealthPoints);
+	MaxEnergyPoints = FMath::Max(1.0f, MaxEnergyPoints);
+	HealthPoints = FMath::Clamp(HealthPoints, 0.0f, MaxHealthPoints);
+	EnergyPoints = FMath::Clamp(EnergyPoints, 0.0f, MaxEnergyPoints);
+}
+
+void APlayerMatterState::BroadcastVitalsChanged()
+{
+	UE_LOG(
+		LogRabbitVitals,
+		Log,
+		TEXT("Vitals changed: HP %.2f/%.2f (%.0f%%), EP %.2f/%.2f (%.0f%%)."),
+		HealthPoints,
+		MaxHealthPoints,
+		GetHealthPercent() * 100.0f,
+		EnergyPoints,
+		MaxEnergyPoints,
+		GetEnergyPercent() * 100.0f
+	);
+	OnVitalsChanged.Broadcast(GetHealthPercent(), GetEnergyPercent());
+}
+
+void APlayerMatterState::ApplyHealKeyFallback()
+{
+	const APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	if (!PlayerController)
+	{
+		return;
+	}
+
+	const bool bIsHealKeyDown = PlayerController->IsInputKeyDown(EKeys::H);
+	const bool bWasHealKeyDown = bWasHealFallbackKeyDown;
+	if (bIsHealKeyDown && !bWasHealKeyDown)
+	{
+		UE_LOG(LogRabbitVitals, Log, TEXT("Heal key H pressed."));
+	}
+	else if (!bIsHealKeyDown && bWasHealKeyDown)
+	{
+		UE_LOG(LogRabbitVitals, Log, TEXT("Heal key H released."));
+	}
+
+	bWasHealFallbackKeyDown = bIsHealKeyDown;
+	if (!bIsHealKeyDown)
+	{
+		return;
+	}
+
+	const bool bCanApplyHeal = EnergyRestoreRate > 0.0f
+		&& EnergyRestoredPerHealthSpent > 0.0f
+		&& EnergyPoints < MaxEnergyPoints
+		&& HealthPoints > 0.0f;
+
+	if (bCanApplyHeal || !bWasHealKeyDown)
+	{
+		RestoreEnergyFromHealth();
+	}
+}
+
+bool APlayerMatterState::CanMeltContact(AMeltableActor* MeltableActor) const
+{
+	if (!MeltableActor)
+	{
+		return false;
+	}
+
+	if (EnergyPoints > 0.0f)
+	{
+		return true;
+	}
+
+	const UWorld* World = GetWorld();
+	if (!World || LiquidZeroEnergyMeltContinuationSeconds <= 0.0f)
+	{
+		return false;
+	}
+
+	return ActiveLiquidMeltableActor.Get() == MeltableActor
+		&& LastMeltContactTime >= 0.0f
+		&& World->GetTimeSeconds() - LastMeltContactTime <= LiquidZeroEnergyMeltContinuationSeconds;
+}
+
+bool APlayerMatterState::IsCurrentlyMelting() const
+{
+	if (!bCanMeltObjects || !IsLiquid())
+	{
+		return false;
+	}
+
+	AMeltableActor* MeltableActor = nullptr;
+	FVector ContactLocation = FVector::ZeroVector;
+	FVector ContactNormal = FVector::UpVector;
+	return GetCurrentMeltableContact(MeltableActor, ContactLocation, ContactNormal) && CanMeltContact(MeltableActor);
 }
 
 bool APlayerMatterState::GetCurrentMeltableContact(
@@ -377,13 +630,48 @@ void APlayerMatterState::ApplyLiquidMelt(float DeltaTime)
 		return;
 	}
 
+	if (!CanMeltContact(MeltableActor))
+	{
+		return;
+	}
+
 	LastMeltContactTime = World->GetTimeSeconds();
+	ActiveLiquidMeltableActor = MeltableActor;
+	const float MeltDepth = GetLiquidMeltRate() * DeltaTime;
+	if (EnergyPoints > 0.0f)
+	{
+		ConsumeEnergy(MeltDepth * LiquidEnergyCostPerMeltDepth);
+	}
 	MeltableActor->ApplyMeltCrater(
 		ContactLocation,
 		ContactNormal,
 		GetLiquidMeltRadius(),
-		GetLiquidMeltRate() * DeltaTime
+		MeltDepth
 	);
+}
+
+void APlayerMatterState::ApplyGasEnergyDrain(float DeltaTime)
+{
+	if (!IsGas() || DeltaTime <= 0.0f || GasEnergyDrainRate <= 0.0f)
+	{
+		return;
+	}
+
+	ConsumeEnergy(GasEnergyDrainRate * DeltaTime);
+	if (EnergyPoints <= 0.0f)
+	{
+		SetMatterState(EPlayerMatterState::Solid);
+	}
+}
+
+void APlayerMatterState::ApplyLiquidEnergyDepletionRule()
+{
+	if (!IsLiquid() || EnergyPoints > 0.0f || IsCurrentlyMelting())
+	{
+		return;
+	}
+
+	SetMatterState(EPlayerMatterState::Solid);
 }
 
 void APlayerMatterState::ConfigurePhysicsInteractionForCurrentState()

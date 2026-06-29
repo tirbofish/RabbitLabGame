@@ -11,8 +11,4 @@ public:
 	virtual void UpdateState(float DeltaTime) override;
 	
 	virtual void ApplyVisuals() override;
-protected:
-	FTimerHandle TimerHandle;
-	
-	void GasTimer();
 };

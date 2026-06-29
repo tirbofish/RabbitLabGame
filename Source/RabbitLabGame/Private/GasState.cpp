@@ -1,6 +1,5 @@
 #include "GasState.h"
 
-#include "TimerManager.h"
 #include "Engine/Engine.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
@@ -24,32 +23,8 @@ void GasState::EnterState()
 	Movement->MaxWalkSpeed = Owner->GasFlySpeed;
 	Movement->GravityScale = 0.0f;
 	Owner->bCanMeltObjects = false;
-	
-	// start timer
-	FTimerDelegate GasTimerDelegate;
-	GasTimerDelegate.BindRaw(this, &GasState::GasTimer);
-
-	Owner->GetWorldTimerManager().SetTimer(
-		TimerHandle,
-		GasTimerDelegate,
-		5.0f,
-		false
-	);
 
 	IPlayerState::EnterState();
-}
-
-void GasState::GasTimer()
-{
-	if (!Owner)
-	{
-		return;
-	}
-	
-	if (GEngine) 
-		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, TEXT("GasState::ExitState (kick from exceeding timer)"));
-
-	Owner->SetMatterState(EPlayerMatterState::Solid);
 }
 
 void GasState::ExitState()
@@ -65,9 +40,6 @@ void GasState::ExitState()
 	UCharacterMovementComponent* Movement = Owner->GetCharacterMovement();
 	Movement->GravityScale = 1.0f;
 	Movement->Velocity.Z = FMath::Min(Movement->Velocity.Z, Owner->SolidJumpVelocity);
-	
-	// cancel the gas timer
-	Owner->GetWorldTimerManager().ClearTimer(TimerHandle);
 
 	IPlayerState::ExitState();
 }

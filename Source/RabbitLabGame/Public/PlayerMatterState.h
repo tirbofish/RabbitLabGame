@@ -20,6 +20,14 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
 	NewState
 );
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
+	FOnVitalsChanged,
+	float,
+	HealthPercent,
+	float,
+	EnergyPercent
+);
+
 class APlayerMatterState;
 class AMeltableActor;
 class AMeltableSurface;
@@ -67,6 +75,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Matter State")
 	void SetMatterState(EPlayerMatterState NewState);
 
+	UFUNCTION(BlueprintCallable, Category="Matter State")
+	bool RequestMatterStateChange(EPlayerMatterState NewState);
+
 	UFUNCTION(BlueprintPure, Category="Matter State")
 	EPlayerMatterState GetMatterState() const { return CurrentMatterState; }
 
@@ -100,8 +111,23 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Matter State")
 	void MatterOrdinalDown();
 
+	UFUNCTION(BlueprintPure, Category="Vitals")
+	float GetHealthPercent() const { return MaxHealthPoints > 0.0f ? HealthPoints / MaxHealthPoints : 0.0f; }
+
+	UFUNCTION(BlueprintPure, Category="Vitals")
+	float GetEnergyPercent() const { return MaxEnergyPoints > 0.0f ? EnergyPoints / MaxEnergyPoints : 0.0f; }
+
+	UFUNCTION(BlueprintPure, Category="Vitals")
+	float GetHealthPoints() const { return HealthPoints; }
+
+	UFUNCTION(BlueprintPure, Category="Vitals")
+	float GetEnergyPoints() const { return EnergyPoints; }
+
 	UPROPERTY(BlueprintAssignable, Category="Matter State")
 	FOnMatterStateChanged OnMatterStateChanged;
+
+	UPROPERTY(BlueprintAssignable, Category="Vitals")
+	FOnVitalsChanged OnVitalsChanged;
 
 protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Matter State")
@@ -152,8 +178,35 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Matter State|Gas")
 	float GasMaxFallSpeed = 80.0f;
 
-	UPROPERTY(EditAnywhere, Category="Matter State|Gas", meta=(ClampMin="0.0", UIMin="0.0"))
-	float GasDurationSeconds = 5.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Vitals", meta=(ClampMin="1.0", UIMin="1.0"))
+	float MaxHealthPoints = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Vitals", meta=(ClampMin="1.0", UIMin="1.0"))
+	float MaxEnergyPoints = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Vitals", meta=(ClampMin="0.0", UIMin="0.0"))
+	float HealthPoints = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Vitals", meta=(ClampMin="0.0", UIMin="0.0"))
+	float EnergyPoints = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Vitals|Energy", meta=(ClampMin="0.0", UIMin="0.0"))
+	float MatterStateChangeEnergyCost = 10.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Vitals|Energy", meta=(ClampMin="0.0", UIMin="0.0"))
+	float GasEnergyDrainRate = 20.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Vitals|Energy", meta=(ClampMin="0.0", UIMin="0.0"))
+	float LiquidEnergyCostPerMeltDepth = 0.25f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Vitals|Energy", meta=(ClampMin="0.0", UIMin="0.0"))
+	float LiquidZeroEnergyMeltContinuationSeconds = 0.25f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Vitals|Healing", meta=(ClampMin="0.0", UIMin="0.0"))
+	float EnergyRestoreRate = 50.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Vitals|Healing", meta=(ClampMin="0.0", UIMin="0.0"))
+	float EnergyRestoredPerHealthSpent = 5.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category="Matter State")
 	bool bCanMeltObjects = false;
@@ -161,9 +214,19 @@ protected:
 	void EnterMatterState(EPlayerMatterState State);
 	void ExitMatterState(EPlayerMatterState State);
 	void CycleMatterState(int32 Direction);
+	void RestoreEnergyFromHealth();
+	bool ConsumeEnergy(float Amount);
+	void AddHealth(float Amount);
+	void ClampVitals();
+	void BroadcastVitalsChanged();
+	void ApplyHealKeyFallback();
+	bool CanMeltContact(AMeltableActor* MeltableActor) const;
+	bool IsCurrentlyMelting() const;
 	bool GetCurrentMeltableContact(AMeltableActor*& OutMeltableActor, FVector& OutLocation, FVector& OutNormal) const;
 	void DrawContinuousMeltableContactDebug();
 	void ApplyLiquidMelt(float DeltaTime);
+	void ApplyGasEnergyDrain(float DeltaTime);
+	void ApplyLiquidEnergyDepletionRule();
 	void ConfigurePhysicsInteractionForCurrentState();
 	void ApplySolidPushNudge(AActor* Other, UPrimitiveComponent* OtherComp, const FHitResult& Hit);
 	IPlayerState* GetStateObject(EPlayerMatterState State) const;
@@ -173,6 +236,7 @@ protected:
 	TUniquePtr<IPlayerState> GasStateObject;
 
 	TWeakObjectPtr<AMeltableSurface> ActiveMeltableSurface;
+	TWeakObjectPtr<AMeltableActor> ActiveLiquidMeltableActor;
 	FVector ActiveMeltLocation = FVector::ZeroVector;
 	FVector ActiveMeltNormal = FVector::UpVector;
 	float ActiveMeltAccumulatedDepth = 0.0f;
@@ -188,6 +252,12 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Input")
 	TObjectPtr<UInputAction> MatterOrdinalDownAction;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Input")
+	TObjectPtr<UInputAction> HealAction;
+
+	float LastEnergyRestoreAppliedTime = -1.0f;
+	bool bWasHealFallbackKeyDown = false;
 
 	friend class SolidState;
 	friend class LiquidState;
