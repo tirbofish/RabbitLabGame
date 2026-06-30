@@ -3,6 +3,7 @@
 #include "Components/BoxComponent.h"
 #include "Components/ChildActorComponent.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "EnhancedInputComponent.h"
 #include "Engine/World.h"
@@ -21,6 +22,8 @@ DEFINE_LOG_CATEGORY_STATIC(LogRabbitVitals, Log, All);
 
 namespace
 {
+	const FName MatterSwitchBlueprintEventName(TEXT("On Matter Switch"));
+
 	constexpr EPlayerMatterState MatterOrdinal[] =
 	{
 		EPlayerMatterState::Liquid,
@@ -89,6 +92,10 @@ void IPlayerState::UpdateState(float DeltaTime)
 
 void IPlayerState::ApplyVisuals()
 {
+	if (Owner)
+	{
+		Owner->TriggerMatterSwitchVisuals();
+	}
 }
 
 APlayerMatterState::APlayerMatterState()
@@ -128,14 +135,7 @@ APlayerMatterState::APlayerMatterState()
 	}
 }
 
-APlayerMatterState::~APlayerMatterState()
-{
-	// Live Coding can leave these non-UObject state helpers allocated by an older patch module.
-	// Detach them instead of virtual-deleting through a stale patch boundary during actor teardown.
-	(void)SolidStateObject.Release();
-	(void)LiquidStateObject.Release();
-	(void)GasStateObject.Release();
-}
+APlayerMatterState::~APlayerMatterState() = default;
 
 void APlayerMatterState::BeginPlay()
 {
@@ -315,6 +315,38 @@ void APlayerMatterState::MatterOrdinalUp()
 void APlayerMatterState::MatterOrdinalDown()
 {
 	CycleMatterState(-1);
+}
+
+void APlayerMatterState::ApplyMatterSwitchVisuals()
+{
+	SetVisibilityOfMesh(GetMesh(), IsSolid());
+	SetVisibilityOfMesh(GetGasMatterMesh(), IsGas());
+	SetVisibilityOfMesh(GetLiquidMatterMesh(), IsLiquid());
+}
+
+void APlayerMatterState::SetVisibilityOfMesh(USkeletalMeshComponent* TargetMesh, bool bVisibility)
+{
+	if (!TargetMesh)
+	{
+		return;
+	}
+
+	TargetMesh->SetVisibility(bVisibility, true);
+	TargetMesh->SetHiddenInGame(!bVisibility, true);
+}
+
+void APlayerMatterState::TriggerMatterSwitchVisuals()
+{
+	ApplyMatterSwitchVisuals();
+	CallMatterSwitchBlueprintEvent();
+}
+
+void APlayerMatterState::CallMatterSwitchBlueprintEvent()
+{
+	if (UFunction* MatterSwitchEvent = FindFunction(MatterSwitchBlueprintEventName))
+	{
+		ProcessEvent(MatterSwitchEvent, nullptr);
+	}
 }
 
 void APlayerMatterState::EnterMatterState(EPlayerMatterState State)
@@ -736,6 +768,32 @@ void APlayerMatterState::ApplySolidPushNudge(AActor* Other, UPrimitiveComponent*
 	{
 		PushableComponent->AddImpulse(PushDirection * SolidPushNudgeVelocity, Hit.BoneName, true);
 	}
+}
+
+USkeletalMeshComponent* APlayerMatterState::FindMatterMeshByName(FName ComponentName) const
+{
+	TArray<USkeletalMeshComponent*> SkeletalMeshComponents;
+	GetComponents<USkeletalMeshComponent>(SkeletalMeshComponents);
+
+	for (USkeletalMeshComponent* SkeletalMeshComponent : SkeletalMeshComponents)
+	{
+		if (SkeletalMeshComponent && SkeletalMeshComponent->GetFName() == ComponentName)
+		{
+			return SkeletalMeshComponent;
+		}
+	}
+
+	return nullptr;
+}
+
+USkeletalMeshComponent* APlayerMatterState::GetGasMatterMesh() const
+{
+	return FindMatterMeshByName(TEXT("SkeletalMesh-Gas"));
+}
+
+USkeletalMeshComponent* APlayerMatterState::GetLiquidMatterMesh() const
+{
+	return FindMatterMeshByName(TEXT("SkeletalMesh-Liquid"));
 }
 
 IPlayerState* APlayerMatterState::GetStateObject(EPlayerMatterState State) const

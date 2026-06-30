@@ -31,6 +31,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
 class APlayerMatterState;
 class AMeltableActor;
 class AMeltableSurface;
+class USkeletalMeshComponent;
 class SolidState;
 class LiquidState;
 class GasState;
@@ -110,6 +111,12 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category="Matter State")
 	void MatterOrdinalDown();
+
+	UFUNCTION(BlueprintCallable, Category="Matter State|Visuals")
+	void ApplyMatterSwitchVisuals();
+
+	UFUNCTION(BlueprintCallable, Category="Matter State|Visuals", meta=(DisplayName="Set Visibility of Mesh"))
+	void SetVisibilityOfMesh(USkeletalMeshComponent* TargetMesh, bool bVisibility);
 
 	UFUNCTION(BlueprintPure, Category="Vitals")
 	float GetHealthPercent() const { return MaxHealthPoints > 0.0f ? HealthPoints / MaxHealthPoints : 0.0f; }
@@ -229,6 +236,11 @@ protected:
 	void ApplyLiquidEnergyDepletionRule();
 	void ConfigurePhysicsInteractionForCurrentState();
 	void ApplySolidPushNudge(AActor* Other, UPrimitiveComponent* OtherComp, const FHitResult& Hit);
+	void TriggerMatterSwitchVisuals();
+	void CallMatterSwitchBlueprintEvent();
+	USkeletalMeshComponent* FindMatterMeshByName(FName ComponentName) const;
+	USkeletalMeshComponent* GetGasMatterMesh() const;
+	USkeletalMeshComponent* GetLiquidMatterMesh() const;
 	IPlayerState* GetStateObject(EPlayerMatterState State) const;
 
 	TUniquePtr<IPlayerState> SolidStateObject;
@@ -259,6 +271,7 @@ protected:
 	float LastEnergyRestoreAppliedTime = -1.0f;
 	bool bWasHealFallbackKeyDown = false;
 
+	friend class IPlayerState;
 	friend class SolidState;
 	friend class LiquidState;
 	friend class GasState;
