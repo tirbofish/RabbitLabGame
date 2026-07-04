@@ -22,7 +22,44 @@ struct FMeshTriangle
 	FVector A = FVector::ZeroVector;
 	FVector B = FVector::ZeroVector;
 	FVector C = FVector::ZeroVector;
+	FVector2D UVA = FVector2D::ZeroVector;
+	FVector2D UVB = FVector2D::ZeroVector;
+	FVector2D UVC = FVector2D::ZeroVector;
+	int32 MaterialIndex = 0;
 };
+
+bool AddStaticMeshTriangle(
+	const FPositionVertexBuffer& PositionVertexBuffer,
+	const FStaticMeshVertexBuffer& StaticMeshVertexBuffer,
+	const FRawStaticIndexBuffer& IndexBuffer,
+	int32 Index,
+	int32 MaterialIndex,
+	bool bHasUVs,
+	const FTransform& ComponentTransform,
+	TArray<FMeshTriangle>& Triangles)
+{
+	const uint32 IndexA = IndexBuffer.GetIndex(Index);
+	const uint32 IndexB = IndexBuffer.GetIndex(Index + 1);
+	const uint32 IndexC = IndexBuffer.GetIndex(Index + 2);
+
+	if (IndexA >= PositionVertexBuffer.GetNumVertices() ||
+		IndexB >= PositionVertexBuffer.GetNumVertices() ||
+		IndexC >= PositionVertexBuffer.GetNumVertices())
+	{
+		return false;
+	}
+
+	Triangles.Add({
+		ComponentTransform.TransformPosition(static_cast<FVector>(PositionVertexBuffer.VertexPosition(IndexA))),
+		ComponentTransform.TransformPosition(static_cast<FVector>(PositionVertexBuffer.VertexPosition(IndexB))),
+		ComponentTransform.TransformPosition(static_cast<FVector>(PositionVertexBuffer.VertexPosition(IndexC))),
+		bHasUVs ? FVector2D(StaticMeshVertexBuffer.GetVertexUV(IndexA, 0)) : FVector2D::ZeroVector,
+		bHasUVs ? FVector2D(StaticMeshVertexBuffer.GetVertexUV(IndexB, 0)) : FVector2D::ZeroVector,
+		bHasUVs ? FVector2D(StaticMeshVertexBuffer.GetVertexUV(IndexC, 0)) : FVector2D::ZeroVector,
+		FMath::Max(0, MaterialIndex)
+	});
+	return true;
+}
 
 bool ExtractStaticMeshTriangles(const UStaticMeshComponent* MeshComponent, TArray<FMeshTriangle>& Triangles)
 {
@@ -41,8 +78,10 @@ bool ExtractStaticMeshTriangles(const UStaticMeshComponent* MeshComponent, TArra
 
 	const FStaticMeshLODResources& LODResources = StaticMesh->GetRenderData()->LODResources[0];
 	const FPositionVertexBuffer& PositionVertexBuffer = LODResources.VertexBuffers.PositionVertexBuffer;
+	const FStaticMeshVertexBuffer& StaticMeshVertexBuffer = LODResources.VertexBuffers.StaticMeshVertexBuffer;
 	const FRawStaticIndexBuffer& IndexBuffer = LODResources.IndexBuffer;
 	const int32 IndexCount = IndexBuffer.GetNumIndices();
+	const bool bHasUVs = StaticMeshVertexBuffer.GetNumTexCoords() > 0;
 
 	if (PositionVertexBuffer.GetNumVertices() == 0 || IndexCount < 3)
 	{
@@ -52,27 +91,265 @@ bool ExtractStaticMeshTriangles(const UStaticMeshComponent* MeshComponent, TArra
 	const FTransform ComponentTransform = MeshComponent->GetComponentTransform();
 	Triangles.Reserve(IndexCount / 3);
 
-	for (int32 Index = 0; Index + 2 < IndexCount; Index += 3)
+	for (const FStaticMeshSection& Section : LODResources.Sections)
 	{
-		const uint32 IndexA = IndexBuffer.GetIndex(Index);
-		const uint32 IndexB = IndexBuffer.GetIndex(Index + 1);
-		const uint32 IndexC = IndexBuffer.GetIndex(Index + 2);
+		const int32 SectionEndIndex = Section.FirstIndex + Section.NumTriangles * 3;
+		for (int32 Index = Section.FirstIndex; Index + 2 < SectionEndIndex && Index + 2 < IndexCount; Index += 3)
+		{
+			AddStaticMeshTriangle(
+				PositionVertexBuffer,
+				StaticMeshVertexBuffer,
+				IndexBuffer,
+				Index,
+				Section.MaterialIndex,
+				bHasUVs,
+				ComponentTransform,
+				Triangles
+			);
+		}
+	}
 
-		if (IndexA >= PositionVertexBuffer.GetNumVertices() ||
-			IndexB >= PositionVertexBuffer.GetNumVertices() ||
-			IndexC >= PositionVertexBuffer.GetNumVertices())
+	if (Triangles.IsEmpty())
+	{
+		for (int32 Index = 0; Index + 2 < IndexCount; Index += 3)
+		{
+			AddStaticMeshTriangle(
+				PositionVertexBuffer,
+				StaticMeshVertexBuffer,
+				IndexBuffer,
+				Index,
+				0,
+				bHasUVs,
+				ComponentTransform,
+				Triangles
+			);
+		}
+	}
+
+	return !Triangles.IsEmpty();
+}
+
+bool TryGetBarycentricCoordinates(
+	const FVector& Point,
+	const FMeshTriangle& Triangle,
+	FVector& OutBarycentricCoordinates)
+{
+	const FVector EdgeAB = Triangle.B - Triangle.A;
+	const FVector EdgeAC = Triangle.C - Triangle.A;
+	const FVector PointOffset = Point - Triangle.A;
+
+	const double D00 = FVector::DotProduct(EdgeAB, EdgeAB);
+	const double D01 = FVector::DotProduct(EdgeAB, EdgeAC);
+	const double D11 = FVector::DotProduct(EdgeAC, EdgeAC);
+	const double D20 = FVector::DotProduct(PointOffset, EdgeAB);
+	const double D21 = FVector::DotProduct(PointOffset, EdgeAC);
+	const double Denominator = D00 * D11 - D01 * D01;
+
+	if (FMath::IsNearlyZero(Denominator))
+	{
+		return false;
+	}
+
+	const double BaryB = (D11 * D20 - D01 * D21) / Denominator;
+	const double BaryC = (D00 * D21 - D01 * D20) / Denominator;
+	const double BaryA = 1.0 - BaryB - BaryC;
+
+	OutBarycentricCoordinates = FVector(BaryA, BaryB, BaryC);
+	return true;
+}
+
+bool TryGetClosestSourceMeshAttributes(
+	const FVector& WorldPosition,
+	const TArray<FMeshTriangle>& SourceTriangles,
+	FVector2D* OutUV,
+	int32* OutMaterialIndex)
+{
+	double ClosestDistanceSquared = TNumericLimits<double>::Max();
+	FVector ClosestBarycentricCoordinates = FVector::ZeroVector;
+	const FMeshTriangle* ClosestTriangle = nullptr;
+
+	for (const FMeshTriangle& Triangle : SourceTriangles)
+	{
+		const FVector ClosestPoint = FMath::ClosestPointOnTriangleToPoint(
+			WorldPosition,
+			Triangle.A,
+			Triangle.B,
+			Triangle.C
+		);
+
+		const double DistanceSquared = FVector::DistSquared(WorldPosition, ClosestPoint);
+		if (DistanceSquared >= ClosestDistanceSquared)
 		{
 			continue;
 		}
 
-		Triangles.Add({
-			ComponentTransform.TransformPosition(static_cast<FVector>(PositionVertexBuffer.VertexPosition(IndexA))),
-			ComponentTransform.TransformPosition(static_cast<FVector>(PositionVertexBuffer.VertexPosition(IndexB))),
-			ComponentTransform.TransformPosition(static_cast<FVector>(PositionVertexBuffer.VertexPosition(IndexC)))
-		});
+		FVector BarycentricCoordinates = FVector::ZeroVector;
+		if (!TryGetBarycentricCoordinates(ClosestPoint, Triangle, BarycentricCoordinates))
+		{
+			continue;
+		}
+
+		ClosestDistanceSquared = DistanceSquared;
+		ClosestBarycentricCoordinates = BarycentricCoordinates;
+		ClosestTriangle = &Triangle;
 	}
 
-	return !Triangles.IsEmpty();
+	if (!ClosestTriangle)
+	{
+		return false;
+	}
+
+	if (OutUV)
+	{
+		*OutUV =
+			ClosestTriangle->UVA * ClosestBarycentricCoordinates.X +
+			ClosestTriangle->UVB * ClosestBarycentricCoordinates.Y +
+			ClosestTriangle->UVC * ClosestBarycentricCoordinates.Z;
+	}
+
+	if (OutMaterialIndex)
+	{
+		*OutMaterialIndex = ClosestTriangle->MaterialIndex;
+	}
+
+	return true;
+}
+
+void GeneratePlanarUVs(const TArray<FVector>& WorldVertices, TArray<FVector2D>& OutUVs)
+{
+	OutUVs.Reset(WorldVertices.Num());
+
+	if (WorldVertices.IsEmpty())
+	{
+		return;
+	}
+
+	FBox Bounds(ForceInit);
+	for (const FVector& WorldVertex : WorldVertices)
+	{
+		Bounds += WorldVertex;
+	}
+
+	const FVector Size = Bounds.GetSize();
+	const bool bDropX = Size.X <= Size.Y && Size.X <= Size.Z;
+	const bool bDropY = Size.Y <= Size.X && Size.Y <= Size.Z;
+
+	for (const FVector& WorldVertex : WorldVertices)
+	{
+		const FVector Offset = WorldVertex - Bounds.Min;
+		const FVector2D ProjectedUV = bDropX
+			? FVector2D(Offset.Y, Offset.Z)
+			: bDropY
+				? FVector2D(Offset.X, Offset.Z)
+				: FVector2D(Offset.X, Offset.Y);
+		const FVector2D UVScale = bDropX
+			? FVector2D(Size.Y, Size.Z)
+			: bDropY
+				? FVector2D(Size.X, Size.Z)
+				: FVector2D(Size.X, Size.Y);
+		const FVector2D SafeUVScale(
+			FMath::Max(static_cast<float>(UVScale.X), UE_SMALL_NUMBER),
+			FMath::Max(static_cast<float>(UVScale.Y), UE_SMALL_NUMBER)
+		);
+
+		OutUVs.Add(ProjectedUV / SafeUVScale);
+	}
+}
+
+int32 GetGridCellKey(const FSurfaceNetsGrid& Grid, const FVector& WorldPosition)
+{
+	const FVector SafeCellSize(
+		FMath::Max(Grid.CellSize.X, static_cast<double>(UE_SMALL_NUMBER)),
+		FMath::Max(Grid.CellSize.Y, static_cast<double>(UE_SMALL_NUMBER)),
+		FMath::Max(Grid.CellSize.Z, static_cast<double>(UE_SMALL_NUMBER))
+	);
+	const int32 X = FMath::Clamp(FMath::FloorToInt32((WorldPosition.X - Grid.Origin.X) / SafeCellSize.X), 0, FMath::Max(0, Grid.VoxelCountX - 1));
+	const int32 Y = FMath::Clamp(FMath::FloorToInt32((WorldPosition.Y - Grid.Origin.Y) / SafeCellSize.Y), 0, FMath::Max(0, Grid.VoxelCountY - 1));
+	const int32 Z = FMath::Clamp(FMath::FloorToInt32((WorldPosition.Z - Grid.Origin.Z) / SafeCellSize.Z), 0, FMath::Max(0, Grid.VoxelCountZ - 1));
+
+	return USurfaceNetsBlueprintLibrary::GetSurfaceNetsScalarFieldIndex(X, Y, Z, Grid);
+}
+
+void ComputeNormalsAndTangents(
+	const TArray<FVector>& Vertices,
+	const TArray<int32>& Triangles,
+	const TArray<FVector2D>& UVs,
+	TArray<FVector>& OutNormals,
+	TArray<FProcMeshTangent>& OutTangents)
+{
+	OutNormals.Init(FVector::ZeroVector, Vertices.Num());
+
+	TArray<FVector> AccumulatedTangents;
+	AccumulatedTangents.Init(FVector::ZeroVector, Vertices.Num());
+
+	const bool bHasUVs = UVs.Num() == Vertices.Num();
+
+	for (int32 Index = 0; Index + 2 < Triangles.Num(); Index += 3)
+	{
+		const int32 IndexA = Triangles[Index];
+		const int32 IndexB = Triangles[Index + 1];
+		const int32 IndexC = Triangles[Index + 2];
+
+		if (!Vertices.IsValidIndex(IndexA) || !Vertices.IsValidIndex(IndexB) || !Vertices.IsValidIndex(IndexC))
+		{
+			continue;
+		}
+
+		const FVector& A = Vertices[IndexA];
+		const FVector& B = Vertices[IndexB];
+		const FVector& C = Vertices[IndexC];
+
+		// Area-weighted face normal. Matches the engine's triangle winding convention.
+		const FVector FaceNormal = FVector::CrossProduct(B - C, A - C);
+		OutNormals[IndexA] += FaceNormal;
+		OutNormals[IndexB] += FaceNormal;
+		OutNormals[IndexC] += FaceNormal;
+
+		if (bHasUVs)
+		{
+			const FVector EdgeAB = B - A;
+			const FVector EdgeAC = C - A;
+			const FVector2D DeltaUVAB = UVs[IndexB] - UVs[IndexA];
+			const FVector2D DeltaUVAC = UVs[IndexC] - UVs[IndexA];
+			const double Determinant = DeltaUVAB.X * DeltaUVAC.Y - DeltaUVAB.Y * DeltaUVAC.X;
+
+			if (!FMath::IsNearlyZero(Determinant))
+			{
+				const FVector Tangent = (EdgeAB * DeltaUVAC.Y - EdgeAC * DeltaUVAB.Y) / Determinant;
+				AccumulatedTangents[IndexA] += Tangent;
+				AccumulatedTangents[IndexB] += Tangent;
+				AccumulatedTangents[IndexC] += Tangent;
+			}
+		}
+	}
+
+	OutTangents.SetNum(Vertices.Num());
+
+	for (int32 VertexIndex = 0; VertexIndex < Vertices.Num(); ++VertexIndex)
+	{
+		FVector Normal = OutNormals[VertexIndex].GetSafeNormal();
+		if (Normal.IsNearlyZero())
+		{
+			Normal = FVector::UpVector;
+		}
+		OutNormals[VertexIndex] = Normal;
+
+		// Gram-Schmidt orthogonalize the accumulated tangent against the normal.
+		FVector Tangent =
+			AccumulatedTangents[VertexIndex] -
+			Normal * FVector::DotProduct(AccumulatedTangents[VertexIndex], Normal);
+
+		if (!Tangent.Normalize())
+		{
+			Tangent = FVector::CrossProduct(Normal, FVector::UpVector);
+			if (!Tangent.Normalize())
+			{
+				Tangent = FVector::ForwardVector;
+			}
+		}
+
+		OutTangents[VertexIndex] = FProcMeshTangent(Tangent, false);
+	}
 }
 
 bool RayIntersectsTriangle(
@@ -189,6 +466,7 @@ AMeltableActor::AMeltableActor()
 	GeneratedMeshComponent = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("GeneratedMesh"));
 	GeneratedMeshComponent->SetupAttachment(RootComponent);
 	GeneratedMeshComponent->bUseComplexAsSimpleCollision = true;
+	GeneratedMeshComponent->bUseAsyncCooking = true;
 	GeneratedMeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 	GeneratedMeshComponent->SetCollisionObjectType(ECC_WorldStatic);
 	GeneratedMeshComponent->SetCollisionResponseToAllChannels(ECR_Block);
@@ -333,6 +611,7 @@ void AMeltableActor::BeginPlay()
 		AutoFitSurfaceNetsGridToSourceMesh();
 	}
 
+	VertexAttributeCache.Reset();
 	BuildScalarFieldFromStaticMesh(ScalarFieldValues);
 
 	if (!RegenerateSurfaceNetsMesh())
@@ -557,17 +836,101 @@ void AMeltableActor::UpdateGeneratedMesh()
 	TArray<FVector2D> UV0;
 	TArray<FColor> VertexColors;
 	TArray<FProcMeshTangent> Tangents;
+	TArray<TArray<int32>> TrianglesByMaterialIndex;
 
-	GeneratedMeshComponent->CreateMeshSection(
-		0,
-		LocalVertices,
-		Triangles,
-		Normals,
-		UV0,
-		VertexColors,
-		Tangents,
-		bEnableGeneratedMeshCollision
-	);
+	if (SourceMeshComponent)
+	{
+		TArray<FMeshTriangle> SourceTriangles;
+		if (ExtractStaticMeshTriangles(SourceMeshComponent, SourceTriangles))
+		{
+			TArray<int32> VertexMaterialIndices;
+			UV0.Reserve(SurfaceNetsMesh.Vertices.Num());
+			VertexMaterialIndices.Reserve(SurfaceNetsMesh.Vertices.Num());
+
+			for (const FVector& WorldVertex : SurfaceNetsMesh.Vertices)
+			{
+				// Surface nets emit one vertex per cell, so cache attributes per cell and only
+				// re-run the expensive closest-triangle search for vertices that actually moved.
+				const int32 CellKey = GetGridCellKey(SurfaceNetsGrid, WorldVertex);
+				const FMeltableCachedVertexAttributes* CachedAttributes = VertexAttributeCache.Find(CellKey);
+
+				if (!CachedAttributes ||
+					FVector::DistSquared(CachedAttributes->Position, WorldVertex) > UE_KINDA_SMALL_NUMBER)
+				{
+					FMeltableCachedVertexAttributes NewAttributes;
+					NewAttributes.Position = WorldVertex;
+					TryGetClosestSourceMeshAttributes(
+						WorldVertex,
+						SourceTriangles,
+						&NewAttributes.UV,
+						&NewAttributes.MaterialIndex
+					);
+					NewAttributes.MaterialIndex = FMath::Max(0, NewAttributes.MaterialIndex);
+					CachedAttributes = &VertexAttributeCache.Add(CellKey, NewAttributes);
+				}
+
+				UV0.Add(CachedAttributes->UV);
+				VertexMaterialIndices.Add(CachedAttributes->MaterialIndex);
+			}
+
+			for (int32 Index = 0; Index + 2 < Triangles.Num(); Index += 3)
+			{
+				if (!VertexMaterialIndices.IsValidIndex(Triangles[Index]) ||
+					!VertexMaterialIndices.IsValidIndex(Triangles[Index + 1]) ||
+					!VertexMaterialIndices.IsValidIndex(Triangles[Index + 2]))
+				{
+					continue;
+				}
+
+				// Majority vote across the triangle's vertices, falling back to the first vertex.
+				const int32 MaterialA = VertexMaterialIndices[Triangles[Index]];
+				const int32 MaterialB = VertexMaterialIndices[Triangles[Index + 1]];
+				const int32 MaterialC = VertexMaterialIndices[Triangles[Index + 2]];
+				const int32 MaterialIndex = (MaterialB == MaterialC) ? MaterialB : MaterialA;
+
+				if (TrianglesByMaterialIndex.Num() <= MaterialIndex)
+				{
+					TrianglesByMaterialIndex.SetNum(MaterialIndex + 1);
+				}
+
+				TrianglesByMaterialIndex[MaterialIndex].Add(Triangles[Index]);
+				TrianglesByMaterialIndex[MaterialIndex].Add(Triangles[Index + 1]);
+				TrianglesByMaterialIndex[MaterialIndex].Add(Triangles[Index + 2]);
+			}
+		}
+	}
+
+	if (TrianglesByMaterialIndex.IsEmpty())
+	{
+		TrianglesByMaterialIndex.SetNum(1);
+		TrianglesByMaterialIndex[0] = Triangles;
+	}
+
+	if (UV0.Num() != LocalVertices.Num())
+	{
+		GeneratePlanarUVs(SurfaceNetsMesh.Vertices, UV0);
+	}
+
+	ComputeNormalsAndTangents(LocalVertices, Triangles, UV0, Normals, Tangents);
+
+	for (int32 MaterialIndex = 0; MaterialIndex < TrianglesByMaterialIndex.Num(); ++MaterialIndex)
+	{
+		if (TrianglesByMaterialIndex[MaterialIndex].IsEmpty())
+		{
+			continue;
+		}
+
+		GeneratedMeshComponent->CreateMeshSection(
+			MaterialIndex,
+			LocalVertices,
+			TrianglesByMaterialIndex[MaterialIndex],
+			Normals,
+			UV0,
+			VertexColors,
+			Tangents,
+			bEnableGeneratedMeshCollision
+		);
+	}
 
 	GeneratedMeshComponent->bUseComplexAsSimpleCollision = true;
 	GeneratedMeshComponent->SetCollisionEnabled(

@@ -10,6 +10,14 @@
 
 class UProceduralMeshComponent;
 
+/** Cached UV/material lookup for one surface-nets cell, keyed by the cell's grid index. */
+struct FMeltableCachedVertexAttributes
+{
+	FVector Position = FVector::ZeroVector;
+	FVector2D UV = FVector2D::ZeroVector;
+	int32 MaterialIndex = 0;
+};
+
 UCLASS()
 class RABBITLABGAME_API AMeltableActor : public AActor
 {
@@ -84,6 +92,9 @@ private:
 
 	UPROPERTY()
 	TArray<float> ScalarFieldValues;
+
+	/** Reused across melt regenerations so only vertices that moved re-run the closest-triangle search. */
+	TMap<int32, FMeltableCachedVertexAttributes> VertexAttributeCache;
 
 	double LastMeltRegenerationTime = -1.0;
 };
