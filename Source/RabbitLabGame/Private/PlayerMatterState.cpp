@@ -1,6 +1,7 @@
 #include "PlayerMatterState.h"
 
 #include "Components/BoxComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Components/ChildActorComponent.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -101,6 +102,11 @@ void IPlayerState::ApplyVisuals()
 APlayerMatterState::APlayerMatterState()
 {
 	PrimaryActorTick.bCanEverTick = true;
+
+	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+	{
+		Capsule->SetGenerateOverlapEvents(true);
+	}
 
 	SolidStateObject = MakeUnique<SolidState>();
 	LiquidStateObject = MakeUnique<LiquidState>();
@@ -474,6 +480,38 @@ bool APlayerMatterState::ConsumeEnergy(float Amount)
 	}
 
 	return EnergyPoints > 0.0f;
+}
+
+void APlayerMatterState::RestoreEnergy(float Amount)
+{
+	if (Amount <= 0.0f)
+	{
+		return;
+	}
+
+	const float PreviousEnergy = EnergyPoints;
+	EnergyPoints = FMath::Clamp(EnergyPoints + Amount, 0.0f, MaxEnergyPoints);
+
+	if (!FMath::IsNearlyEqual(PreviousEnergy, EnergyPoints))
+	{
+		BroadcastVitalsChanged();
+	}
+}
+
+void APlayerMatterState::RestoreHealth(float Amount)
+{
+	if (Amount <= 0.0f)
+	{
+		return;
+	}
+
+	const float PreviousHealth = HealthPoints;
+	HealthPoints = FMath::Clamp(HealthPoints + Amount, 0.0f, MaxHealthPoints);
+
+	if (!FMath::IsNearlyEqual(PreviousHealth, HealthPoints))
+	{
+		BroadcastVitalsChanged();
+	}
 }
 
 void APlayerMatterState::AddHealth(float Amount)

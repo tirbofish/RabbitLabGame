@@ -130,6 +130,12 @@ public:
 	UFUNCTION(BlueprintPure, Category="Vitals")
 	float GetEnergyPoints() const { return EnergyPoints; }
 
+	UFUNCTION(BlueprintCallable, Category="Vitals")
+	void RestoreEnergy(float Amount);
+
+	UFUNCTION(BlueprintCallable, Category="Vitals")
+	void RestoreHealth(float Amount);
+
 	UPROPERTY(BlueprintAssignable, Category="Matter State")
 	FOnMatterStateChanged OnMatterStateChanged;
 
