@@ -106,6 +106,19 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Matter State")
 	void SwitchToGas();
 
+	UFUNCTION(BlueprintPure, Category="Matter State|Gas")
+	float GetGasMaxRiseSpeed() const { return GasMaxRiseSpeed; }
+
+	UFUNCTION(BlueprintPure, Category="Matter State|Gas")
+	float GetGasUpwardAcceleration() const { return GasUpwardAcceleration; }
+
+	UFUNCTION(BlueprintCallable, Category="Matter State|Gas")
+	void SetGasRiseParams(float NewMaxRiseSpeed, float NewUpwardAcceleration)
+	{
+		GasMaxRiseSpeed = NewMaxRiseSpeed;
+		GasUpwardAcceleration = NewUpwardAcceleration;
+	}
+
 	UFUNCTION(BlueprintCallable, Category="Matter State")
 	void MatterOrdinalUp();
 
