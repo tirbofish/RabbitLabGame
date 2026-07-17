@@ -10,6 +10,10 @@ class RABBITLABGAME_API URabbitLabCheatManager : public UCheatManager
 	GENERATED_BODY()
 
 public:
+	/** Opens the requested map and spawns the player at that map's PlayerStart. */
+	UFUNCTION(exec)
+	void SpawnInLevel(const FString& LevelName);
+
 	UFUNCTION(exec)
 	void EnableMeltableDebug();
 

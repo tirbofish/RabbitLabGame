@@ -591,6 +591,8 @@ void AMeltableActor::ApplyMeltCrater(
 		return;
 	}
 
+	bHasBeenMelted = true;
+
 	const UWorld* World = GetWorld();
 	const double CurrentTime = World ? World->GetTimeSeconds() : 0.0;
 	if (LastMeltRegenerationTime < 0.0 || CurrentTime - LastMeltRegenerationTime >= MeltRegenerationInterval)
@@ -600,6 +602,16 @@ void AMeltableActor::ApplyMeltCrater(
 			LastMeltRegenerationTime = CurrentTime;
 		}
 	}
+}
+
+bool AMeltableActor::HasBeenMelted() const
+{
+	return bHasBeenMelted;
+}
+
+bool AMeltableActor::IsFullyMelted() const
+{
+	return bHasBeenMelted && (SurfaceNetsMesh.Vertices.IsEmpty() || SurfaceNetsMesh.Triangles.Num() < 3);
 }
 
 void AMeltableActor::BeginPlay()
@@ -957,5 +969,20 @@ void AMeltableActor::UpdateGeneratedMesh()
 		SurfaceNetsMesh.Vertices.Num(),
 		SurfaceNetsMesh.Triangles.Num() / 3
 	);
+
+	for (int32 SectionIndex = 0; SectionIndex < GeneratedMeshComponent->GetNumSections(); ++SectionIndex)
+	{
+		const FProcMeshSection* Section = GeneratedMeshComponent->GetProcMeshSection(SectionIndex);
+		const int32 SectionTriangles = Section ? Section->ProcIndexBuffer.Num() / 3 : 0;
+		UE_LOG(
+			LogMeltableActor,
+			Log,
+			TEXT("%s   section %d: %d triangles, material %s"),
+			*GetName(),
+			SectionIndex,
+			SectionTriangles,
+			*GetNameSafe(GeneratedMeshComponent->GetMaterial(SectionIndex))
+		);
+	}
 }
 

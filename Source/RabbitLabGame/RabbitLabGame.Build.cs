@@ -20,7 +20,13 @@ public class RabbitLabGame : ModuleRules
 			"GeometryFramework", "ProceduralMeshComponent"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] {  });
+		PrivateDependencyModuleNames.AddRange(new string[]
+		{
+			// Used by automation tests to build transient multi-material static meshes.
+			"MeshDescription",
+			"StaticMeshDescription",
+			"MeshConversion"
+		});
 
 		PublicDefinitions.Add("UE_WITH_CHEAT_MANAGER=1");
 

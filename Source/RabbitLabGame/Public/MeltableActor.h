@@ -30,6 +30,14 @@ public:
 	void DrawMeltCollisionDebug(const FVector& CollisionLocation, const FVector& CollisionNormal, float MeltRadius) const;
 	void ApplyMeltCrater(const FVector& CollisionLocation, const FVector& CollisionNormal, float MeltRadius, float MeltAmount);
 
+	/** True once melting has modified this actor's shape at least once. */
+	UFUNCTION(BlueprintPure, Category="Meltable|Melting")
+	bool HasBeenMelted() const;
+
+	/** True when melting has removed the entire generated mesh. */
+	UFUNCTION(BlueprintPure, Category="Meltable|Melting")
+	bool IsFullyMelted() const;
+
 protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
@@ -92,6 +100,8 @@ private:
 
 	UPROPERTY()
 	TArray<float> ScalarFieldValues;
+
+	bool bHasBeenMelted = false;
 
 	/** Reused across melt regenerations so only vertices that moved re-run the closest-triangle search. */
 	TMap<int32, FMeltableCachedVertexAttributes> VertexAttributeCache;
