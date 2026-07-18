@@ -3,6 +3,8 @@
 
 #include "MeltableActor.h"
 
+#include "TimerManager.h"
+
 #include "ProceduralMeshComponent.h"
 #include "RawIndexBuffer.h"
 #include "StaticMeshResources.h"
@@ -458,13 +460,15 @@ float SmoothCraterFalloff(float Alpha)
 
 AMeltableActor::AMeltableActor()
 {
-	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bCanEverTick = false;
 
 	SourceMeshComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("SourceMesh"));
 	RootComponent = SourceMeshComponent;
+	SourceMeshComponent->SetCanEverAffectNavigation(false);
 
 	GeneratedMeshComponent = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("GeneratedMesh"));
 	GeneratedMeshComponent->SetupAttachment(RootComponent);
+	GeneratedMeshComponent->SetCanEverAffectNavigation(false);
 	GeneratedMeshComponent->bUseComplexAsSimpleCollision = true;
 	GeneratedMeshComponent->bUseAsyncCooking = true;
 	GeneratedMeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
@@ -543,11 +547,35 @@ void AMeltableActor::ApplyMeltCrater(
 	const float RadiusSquared = FMath::Square(MeltRadius);
 	bool bChangedScalarField = false;
 
-	for (int32 Z = 0; Z <= SurfaceNetsGrid.VoxelCountZ; ++Z)
+	const FVector RadiusExtent(MeltRadius);
+	const FVector AffectedMin = bMeltThroughSurface
+		? MeltSegmentStart.ComponentMin(MeltSegmentEnd) - RadiusExtent
+		: CraterCenter - RadiusExtent;
+	const FVector AffectedMax = bMeltThroughSurface
+		? MeltSegmentStart.ComponentMax(MeltSegmentEnd) + RadiusExtent
+		: CraterCenter + RadiusExtent;
+
+	const auto GetMinGridIndex = [](float Coordinate, float Origin, float CellSize, int32 MaxIndex)
 	{
-		for (int32 Y = 0; Y <= SurfaceNetsGrid.VoxelCountY; ++Y)
+		return FMath::Clamp(FMath::FloorToInt32((Coordinate - Origin) / CellSize), 0, MaxIndex);
+	};
+	const auto GetMaxGridIndex = [](float Coordinate, float Origin, float CellSize, int32 MaxIndex)
+	{
+		return FMath::Clamp(FMath::CeilToInt32((Coordinate - Origin) / CellSize), 0, MaxIndex);
+	};
+
+	const int32 MinX = GetMinGridIndex(AffectedMin.X, SurfaceNetsGrid.Origin.X, SurfaceNetsGrid.CellSize.X, SurfaceNetsGrid.VoxelCountX);
+	const int32 MinY = GetMinGridIndex(AffectedMin.Y, SurfaceNetsGrid.Origin.Y, SurfaceNetsGrid.CellSize.Y, SurfaceNetsGrid.VoxelCountY);
+	const int32 MinZ = GetMinGridIndex(AffectedMin.Z, SurfaceNetsGrid.Origin.Z, SurfaceNetsGrid.CellSize.Z, SurfaceNetsGrid.VoxelCountZ);
+	const int32 MaxX = GetMaxGridIndex(AffectedMax.X, SurfaceNetsGrid.Origin.X, SurfaceNetsGrid.CellSize.X, SurfaceNetsGrid.VoxelCountX);
+	const int32 MaxY = GetMaxGridIndex(AffectedMax.Y, SurfaceNetsGrid.Origin.Y, SurfaceNetsGrid.CellSize.Y, SurfaceNetsGrid.VoxelCountY);
+	const int32 MaxZ = GetMaxGridIndex(AffectedMax.Z, SurfaceNetsGrid.Origin.Z, SurfaceNetsGrid.CellSize.Z, SurfaceNetsGrid.VoxelCountZ);
+
+	for (int32 Z = MinZ; Z <= MaxZ; ++Z)
+	{
+		for (int32 Y = MinY; Y <= MaxY; ++Y)
 		{
-			for (int32 X = 0; X <= SurfaceNetsGrid.VoxelCountX; ++X)
+			for (int32 X = MinX; X <= MaxX; ++X)
 			{
 				const FVector WorldPoint =
 					SurfaceNetsGrid.Origin +
@@ -592,15 +620,51 @@ void AMeltableActor::ApplyMeltCrater(
 	}
 
 	bHasBeenMelted = true;
+	bMeltRegenerationPending = true;
+	QueueMeltRegeneration();
+}
 
-	const UWorld* World = GetWorld();
-	const double CurrentTime = World ? World->GetTimeSeconds() : 0.0;
-	if (LastMeltRegenerationTime < 0.0 || CurrentTime - LastMeltRegenerationTime >= MeltRegenerationInterval)
+void AMeltableActor::QueueMeltRegeneration()
+{
+	UWorld* World = GetWorld();
+	if (!World || MeltRegenerationInterval <= 0.0f || LastMeltRegenerationTime < 0.0)
 	{
-		if (RegenerateSurfaceNetsMesh())
-		{
-			LastMeltRegenerationTime = CurrentTime;
-		}
+		RegeneratePendingMelt();
+		return;
+	}
+
+	const double Elapsed = World->GetTimeSeconds() - LastMeltRegenerationTime;
+	if (Elapsed >= MeltRegenerationInterval)
+	{
+		RegeneratePendingMelt();
+		return;
+	}
+
+	if (!World->GetTimerManager().IsTimerActive(MeltRegenerationTimerHandle))
+	{
+		const float Delay = FMath::Max(UE_KINDA_SMALL_NUMBER, static_cast<float>(MeltRegenerationInterval - Elapsed));
+		World->GetTimerManager().SetTimer(
+			MeltRegenerationTimerHandle,
+			this,
+			&AMeltableActor::RegeneratePendingMelt,
+			Delay,
+			false
+		);
+	}
+}
+
+void AMeltableActor::RegeneratePendingMelt()
+{
+	if (!bMeltRegenerationPending)
+	{
+		return;
+	}
+
+	if (RegenerateSurfaceNetsMesh())
+	{
+		bMeltRegenerationPending = false;
+		const UWorld* World = GetWorld();
+		LastMeltRegenerationTime = World ? World->GetTimeSeconds() : 0.0;
 	}
 }
 
@@ -822,7 +886,6 @@ void AMeltableActor::UpdateGeneratedMesh()
 	if (SurfaceNetsMesh.Vertices.IsEmpty() || SurfaceNetsMesh.Triangles.Num() < 3)
 	{
 		GeneratedMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		GeneratedMeshComponent->RecreatePhysicsState();
 		return;
 	}
 
@@ -951,7 +1014,8 @@ void AMeltableActor::UpdateGeneratedMesh()
 	GeneratedMeshComponent->SetCollisionObjectType(ECC_WorldStatic);
 	GeneratedMeshComponent->SetCollisionResponseToAllChannels(ECR_Block);
 	GeneratedMeshComponent->CanCharacterStepUpOn = ECB_Yes;
-	GeneratedMeshComponent->RecreatePhysicsState();
+	// CreateMeshSection already updates/cooks collision. Recreating the physics
+	// state here forced a second synchronous rebuild on every melt update.
 
 	if (SourceMeshComponent)
 	{
@@ -963,7 +1027,7 @@ void AMeltableActor::UpdateGeneratedMesh()
 
 	UE_LOG(
 		LogMeltableActor,
-		Log,
+		Verbose,
 		TEXT("%s generated surface-nets mesh with %d vertices and %d triangles."),
 		*GetName(),
 		SurfaceNetsMesh.Vertices.Num(),

@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "ProceduralMeshComponent.h"
 #include "SurfaceNetsBlueprintLibrary.h"
+#include "TimerManager.h"
 #include "GameFramework/Actor.h"
 #include "MeltableActor.generated.h"
 
@@ -73,7 +74,7 @@ protected:
 	bool bEnableGeneratedMeshCollision = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Meltable|Melting", meta=(ClampMin="0.0", UIMin="0.0"))
-	float MeltRegenerationInterval = 0.05f;
+	float MeltRegenerationInterval = 0.1f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Meltable|Melting")
 	bool bMeltThroughSurface = true;
@@ -95,6 +96,8 @@ private:
 	void BuildScalarFieldFromStaticMesh(TArray<float>& OutScalarFieldValues);
 	void DisableSourceMeshAfterConversion();
 	float GetMeltThroughDepth(const FVector& SurfaceNormal, float MeltRadius) const;
+	void QueueMeltRegeneration();
+	void RegeneratePendingMelt();
 	bool RegenerateSurfaceNetsMesh();
 	void UpdateGeneratedMesh();
 
@@ -106,5 +109,7 @@ private:
 	/** Reused across melt regenerations so only vertices that moved re-run the closest-triangle search. */
 	TMap<int32, FMeltableCachedVertexAttributes> VertexAttributeCache;
 
+	FTimerHandle MeltRegenerationTimerHandle;
+	bool bMeltRegenerationPending = false;
 	double LastMeltRegenerationTime = -1.0;
 };
