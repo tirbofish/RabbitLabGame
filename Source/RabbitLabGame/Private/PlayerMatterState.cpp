@@ -412,9 +412,11 @@ void APlayerMatterState::RestoreEnergyFromHealth()
 		return;
 	}
 
-	if (HealthPoints <= 0.0f)
+	const float HealthReserve = MaxHealthPoints * (1.0f - FMath::Clamp(MaxHealthFractionForEnergyRestore, 0.0f, 1.0f));
+	const float SpendableHealth = HealthPoints - HealthReserve;
+	if (SpendableHealth <= 0.0f)
 	{
-		UE_LOG(LogRabbitVitals, Log, TEXT("Energy restore skipped: no HP available. EP %.2f/%.2f."), EnergyPoints, MaxEnergyPoints);
+		UE_LOG(LogRabbitVitals, Log, TEXT("Energy restore skipped: no HP available above reserve %.2f. HP %.2f, EP %.2f/%.2f."), HealthReserve, HealthPoints, EnergyPoints, MaxEnergyPoints);
 		return;
 	}
 
@@ -427,7 +429,7 @@ void APlayerMatterState::RestoreEnergyFromHealth()
 
 	const float RequestedEnergy = EnergyRestoreRate * DeltaTime;
 	const float MissingEnergy = FMath::Max(0.0f, MaxEnergyPoints - EnergyPoints);
-	const float AffordableEnergy = HealthPoints * EnergyRestoredPerHealthSpent;
+	const float AffordableEnergy = SpendableHealth * EnergyRestoredPerHealthSpent;
 	const float EnergyToRestore = FMath::Min(RequestedEnergy, FMath::Min(MissingEnergy, AffordableEnergy));
 
 	if (EnergyToRestore <= 0.0f)
@@ -447,7 +449,7 @@ void APlayerMatterState::RestoreEnergyFromHealth()
 	const float HealthToSpend = EnergyToRestore / EnergyRestoredPerHealthSpent;
 	const float PreviousHealth = HealthPoints;
 	const float PreviousEnergy = EnergyPoints;
-	HealthPoints = FMath::Clamp(HealthPoints - HealthToSpend, 0.0f, MaxHealthPoints);
+	HealthPoints = FMath::Clamp(HealthPoints - HealthToSpend, HealthReserve, MaxHealthPoints);
 	EnergyPoints = FMath::Clamp(EnergyPoints + EnergyToRestore, 0.0f, MaxEnergyPoints);
 	LastEnergyRestoreAppliedTime = CurrentTime;
 	UE_LOG(

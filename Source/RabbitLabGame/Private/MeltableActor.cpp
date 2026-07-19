@@ -12,6 +12,7 @@
 #include "DrawDebugHelpers.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "NavigationSystem.h"
 
 class FPositionVertexBuffer;
 
@@ -468,7 +469,7 @@ AMeltableActor::AMeltableActor()
 
 	GeneratedMeshComponent = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("GeneratedMesh"));
 	GeneratedMeshComponent->SetupAttachment(RootComponent);
-	GeneratedMeshComponent->SetCanEverAffectNavigation(false);
+	GeneratedMeshComponent->SetCanEverAffectNavigation(true);
 	GeneratedMeshComponent->bUseComplexAsSimpleCollision = true;
 	GeneratedMeshComponent->bUseAsyncCooking = true;
 	GeneratedMeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
@@ -886,6 +887,7 @@ void AMeltableActor::UpdateGeneratedMesh()
 	if (SurfaceNetsMesh.Vertices.IsEmpty() || SurfaceNetsMesh.Triangles.Num() < 3)
 	{
 		GeneratedMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		UNavigationSystemV1::UpdateComponentInNavOctree(*GeneratedMeshComponent);
 		return;
 	}
 
@@ -1014,6 +1016,7 @@ void AMeltableActor::UpdateGeneratedMesh()
 	GeneratedMeshComponent->SetCollisionObjectType(ECC_WorldStatic);
 	GeneratedMeshComponent->SetCollisionResponseToAllChannels(ECR_Block);
 	GeneratedMeshComponent->CanCharacterStepUpOn = ECB_Yes;
+	UNavigationSystemV1::UpdateComponentInNavOctree(*GeneratedMeshComponent);
 	// CreateMeshSection already updates/cooks collision. Recreating the physics
 	// state here forced a second synchronous rebuild on every melt update.
 

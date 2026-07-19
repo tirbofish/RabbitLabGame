@@ -16,6 +16,7 @@ public class RabbitLabGame : ModuleRules
 			"Engine",
 			"InputCore",
 			"EnhancedInput",
+			"NavigationSystem",
 			"GeometryCore",
 			"GeometryFramework", "ProceduralMeshComponent"
 		});

@@ -234,6 +234,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Vitals|Healing", meta=(ClampMin="0.0", UIMin="0.0"))
 	float EnergyRestoredPerHealthSpent = 5.0f;
 
+	/** Fraction of MaxHealthPoints that can be spent restoring energy. The remainder is a reserve regen can never consume. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Vitals|Healing", meta=(ClampMin="0.0", ClampMax="1.0", UIMin="0.0", UIMax="1.0"))
+	float MaxHealthFractionForEnergyRestore = 0.99f;
+
 	UPROPERTY(BlueprintReadOnly, Category="Matter State")
 	bool bCanMeltObjects = false;
 
