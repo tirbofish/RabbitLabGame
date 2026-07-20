@@ -68,6 +68,8 @@ public:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaTime) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
+	virtual void NotifyActorBeginOverlap(AActor* OtherActor) override;
+	virtual void NotifyActorEndOverlap(AActor* OtherActor) override;
 	virtual void NotifyHit(class UPrimitiveComponent* MyComp, AActor* Other, class UPrimitiveComponent* OtherComp, bool bSelfMoved, FVector HitLocation, FVector HitNormal, FVector NormalImpulse, const FHitResult& Hit) override;
 
 	UPROPERTY(EditAnywhere, Category="Matter State|Liquid")
@@ -259,6 +261,8 @@ protected:
 	void ApplyLiquidEnergyDepletionRule();
 	void ConfigurePhysicsInteractionForCurrentState();
 	void ApplySolidPushNudge(AActor* Other, UPrimitiveComponent* OtherComp, const FHitResult& Hit);
+	void UpdateMatterStateBlockerOverlap(AActor* OtherActor, int32 CountDelta);
+	bool IsMatterStateBlocked(EPlayerMatterState State) const;
 	void TriggerMatterSwitchVisuals();
 	void CallMatterSwitchBlueprintEvent();
 	USkeletalMeshComponent* FindMatterMeshByName(FName ComponentName) const;
@@ -293,6 +297,8 @@ protected:
 
 	float LastEnergyRestoreAppliedTime = -1.0f;
 	bool bWasHealFallbackKeyDown = false;
+	int32 GasBlockingZoneOverlapCount = 0;
+	int32 LiquidBlockingZoneOverlapCount = 0;
 
 	friend class IPlayerState;
 	friend class SolidState;

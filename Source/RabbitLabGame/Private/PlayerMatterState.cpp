@@ -24,6 +24,8 @@ DEFINE_LOG_CATEGORY_STATIC(LogRabbitVitals, Log, All);
 namespace
 {
 	const FName MatterSwitchBlueprintEventName(TEXT("On Matter Switch"));
+	const FName BlocksGasConversionTag(TEXT("BlocksGasConversion"));
+	const FName BlocksLiquidConversionTag(TEXT("BlocksLiquidConversion"));
 
 	constexpr EPlayerMatterState MatterOrdinal[] =
 	{
@@ -62,6 +64,7 @@ namespace
 
 		return nullptr;
 	}
+
 }
 
 void IPlayerState::Initialize(APlayerMatterState* InOwner, EPlayerMatterState InState)
@@ -274,6 +277,13 @@ void APlayerMatterState::SetMatterState(EPlayerMatterState NewState)
 		return;
 	}
 
+	// Keep Blueprint callers from bypassing the same zone rule enforced by
+	// RequestMatterStateChange.
+	if (IsMatterStateBlocked(NewState))
+	{
+		return;
+	}
+
 	ExitMatterState(CurrentMatterState);
 	CurrentMatterState = NewState;
 	EnterMatterState(CurrentMatterState);
@@ -288,6 +298,11 @@ bool APlayerMatterState::RequestMatterStateChange(EPlayerMatterState NewState)
 		return true;
 	}
 
+	if (IsMatterStateBlocked(NewState))
+	{
+		return false;
+	}
+
 	if (EnergyPoints <= 0.0f)
 	{
 		return false;
@@ -296,6 +311,49 @@ bool APlayerMatterState::RequestMatterStateChange(EPlayerMatterState NewState)
 	ConsumeEnergy(MatterStateChangeEnergyCost);
 	SetMatterState(NewState);
 	return true;
+}
+
+void APlayerMatterState::NotifyActorBeginOverlap(AActor* OtherActor)
+{
+	Super::NotifyActorBeginOverlap(OtherActor);
+	UpdateMatterStateBlockerOverlap(OtherActor, 1);
+}
+
+void APlayerMatterState::NotifyActorEndOverlap(AActor* OtherActor)
+{
+	Super::NotifyActorEndOverlap(OtherActor);
+	UpdateMatterStateBlockerOverlap(OtherActor, -1);
+}
+
+void APlayerMatterState::UpdateMatterStateBlockerOverlap(AActor* OtherActor, int32 CountDelta)
+{
+	if (!IsValid(OtherActor))
+	{
+		return;
+	}
+
+	if (OtherActor->ActorHasTag(BlocksGasConversionTag))
+	{
+		GasBlockingZoneOverlapCount = FMath::Max(0, GasBlockingZoneOverlapCount + CountDelta);
+	}
+
+	if (OtherActor->ActorHasTag(BlocksLiquidConversionTag))
+	{
+		LiquidBlockingZoneOverlapCount = FMath::Max(0, LiquidBlockingZoneOverlapCount + CountDelta);
+	}
+}
+
+bool APlayerMatterState::IsMatterStateBlocked(EPlayerMatterState State) const
+{
+	switch (State)
+	{
+	case EPlayerMatterState::Gas:
+		return GasBlockingZoneOverlapCount > 0;
+	case EPlayerMatterState::Liquid:
+		return LiquidBlockingZoneOverlapCount > 0;
+	default:
+		return false;
+	}
 }
 
 void APlayerMatterState::SwitchToSolid()
