@@ -574,6 +574,22 @@ void APlayerMatterState::RestoreHealth(float Amount)
 	}
 }
 
+void APlayerMatterState::ApplyDamage(float Amount)
+{
+	if (Amount <= 0.0f)
+	{
+		return;
+	}
+
+	const float PreviousHealth = HealthPoints;
+	HealthPoints = FMath::Clamp(HealthPoints - Amount, 0.0f, MaxHealthPoints);
+
+	if (!FMath::IsNearlyEqual(PreviousHealth, HealthPoints))
+	{
+		BroadcastVitalsChanged();
+	}
+}
+
 void APlayerMatterState::AddHealth(float Amount)
 {
 	if (Amount <= 0.0f)
