@@ -574,7 +574,7 @@ void APlayerMatterState::RestoreHealth(float Amount)
 	}
 }
 
-void APlayerMatterState::ApplyDamage(float Amount)
+void APlayerMatterState::DrainHealth(float Amount)
 {
 	if (Amount <= 0.0f)
 	{

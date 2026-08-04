@@ -152,7 +152,7 @@ public:
 	void RestoreHealth(float Amount);
 
 	UFUNCTION(BlueprintCallable, Category="Vitals")
-	void ApplyDamage(float Amount);
+	void DrainHealth(float Amount);
 
 	UPROPERTY(BlueprintAssignable, Category="Matter State")
 	FOnMatterStateChanged OnMatterStateChanged;
