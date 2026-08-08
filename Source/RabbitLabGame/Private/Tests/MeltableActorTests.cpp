@@ -182,7 +182,7 @@ struct FConversionResult
 	TArray<UMaterialInterface*> SectionMaterials;
 };
 
-/** Spawns a MeltableActor around the mesh, lets BeginPlay run the surface-nets conversion, and reports the generated sections. */
+/** Spawns a MeltableActor around the mesh, forces the surface-nets conversion, and reports the generated sections. */
 FConversionResult RunMeltableConversion(FAutomationTestBase& Test, UStaticMesh* StaticMesh, const TArray<UMaterialInterface*>& Materials)
 {
 	FConversionResult Result;
@@ -209,6 +209,7 @@ FConversionResult RunMeltableConversion(FAutomationTestBase& Test, UStaticMesh* 
 	}
 
 	Actor->FinishSpawning(FTransform::Identity);
+	Actor->EnsureMeltRepresentation();
 	Result.bSpawned = true;
 
 	UProceduralMeshComponent* GeneratedMesh = Actor->FindComponentByClass<UProceduralMeshComponent>();

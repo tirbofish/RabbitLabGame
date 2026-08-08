@@ -8,11 +8,14 @@
 #include "ProceduralMeshComponent.h"
 #include "RawIndexBuffer.h"
 #include "StaticMeshResources.h"
+#include "Components/BoxComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "NavigationSystem.h"
+#include "PhysicsEngine/BodySetup.h"
+#include "UObject/ObjectSaveContext.h"
 
 class FPositionVertexBuffer;
 
@@ -91,7 +94,8 @@ bool ExtractStaticMeshTriangles(const UStaticMeshComponent* MeshComponent, TArra
 		return false;
 	}
 
-	const FTransform ComponentTransform = MeshComponent->GetComponentTransform();
+	// Mesh-buffer local space so bakes are independent of actor placement/scale.
+	const FTransform LocalTransform = FTransform::Identity;
 	Triangles.Reserve(IndexCount / 3);
 
 	for (const FStaticMeshSection& Section : LODResources.Sections)
@@ -106,7 +110,7 @@ bool ExtractStaticMeshTriangles(const UStaticMeshComponent* MeshComponent, TArra
 				Index,
 				Section.MaterialIndex,
 				bHasUVs,
-				ComponentTransform,
+				LocalTransform,
 				Triangles
 			);
 		}
@@ -123,7 +127,7 @@ bool ExtractStaticMeshTriangles(const UStaticMeshComponent* MeshComponent, TArra
 				Index,
 				0,
 				bHasUVs,
-				ComponentTransform,
+				LocalTransform,
 				Triangles
 			);
 		}
@@ -457,6 +461,29 @@ float SmoothCraterFalloff(float Alpha)
 	const float ClampedAlpha = FMath::Clamp(Alpha, 0.0f, 1.0f);
 	return ClampedAlpha * ClampedAlpha * (3.0f - 2.0f * ClampedAlpha);
 }
+
+bool StaticMeshHasUsableSimpleCollision(const UStaticMesh* Mesh)
+{
+	if (!Mesh)
+	{
+		return false;
+	}
+
+	const UBodySetup* BodySetup = Mesh->GetBodySetup();
+	if (!BodySetup)
+	{
+		return false;
+	}
+
+	// Pawn movement sweeps use simple collision. Complex-as-simple meshes usually still
+	// expose aggregate geometry; if they don't, fall through to immediate conversion.
+	if (BodySetup->CollisionTraceFlag == CTF_UseComplexAsSimple)
+	{
+		return true;
+	}
+
+	return BodySetup->AggGeom.GetElementCount() > 0;
+}
 }
 
 AMeltableActor::AMeltableActor()
@@ -471,7 +498,8 @@ AMeltableActor::AMeltableActor()
 	GeneratedMeshComponent->SetupAttachment(RootComponent);
 	GeneratedMeshComponent->SetCanEverAffectNavigation(true);
 	GeneratedMeshComponent->bUseComplexAsSimpleCollision = true;
-	GeneratedMeshComponent->bUseAsyncCooking = true;
+	// Sync cook: async cooking left a gap with no collision while standing on a melt.
+	GeneratedMeshComponent->bUseAsyncCooking = false;
 	GeneratedMeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 	GeneratedMeshComponent->SetCollisionObjectType(ECC_WorldStatic);
 	GeneratedMeshComponent->SetCollisionResponseToAllChannels(ECR_Block);
@@ -536,19 +564,28 @@ void AMeltableActor::ApplyMeltCrater(
 	float MeltAmount
 )
 {
-	if (ScalarFieldValues.IsEmpty() || MeltRadius <= 0.0f || MeltAmount <= 0.0f)
+	EnsureMeltRepresentation();
+
+	if (ScalarFieldValues.IsEmpty() || MeltRadius <= 0.0f || MeltAmount <= 0.0f || !SourceMeshComponent)
 	{
 		return;
 	}
 
-	const FVector Normal = CollisionNormal.IsNearlyZero() ? FVector::UpVector : CollisionNormal.GetSafeNormal();
-	const FVector CraterCenter = CollisionLocation - Normal * (MeltRadius * 0.5f);
-	const FVector MeltSegmentStart = CollisionLocation + Normal * (MeltRadius * 0.25f);
-	const FVector MeltSegmentEnd = CollisionLocation - Normal * GetMeltThroughDepth(Normal, MeltRadius);
-	const float RadiusSquared = FMath::Square(MeltRadius);
+	const FTransform& ComponentToWorld = SourceMeshComponent->GetComponentTransform();
+	const FVector LocalCollisionLocation = ComponentToWorld.InverseTransformPosition(CollisionLocation);
+	const FVector LocalNormal = ComponentToWorld.InverseTransformVector(CollisionNormal).GetSafeNormal();
+	const float LocalMeltRadius = ComponentToWorld.InverseTransformVector(
+		(CollisionNormal.IsNearlyZero() ? FVector::UpVector : CollisionNormal.GetSafeNormal()) * MeltRadius
+	).Size();
+
+	const FVector Normal = LocalNormal.IsNearlyZero() ? FVector::UpVector : LocalNormal;
+	const FVector CraterCenter = LocalCollisionLocation - Normal * (LocalMeltRadius * 0.5f);
+	const FVector MeltSegmentStart = LocalCollisionLocation + Normal * (LocalMeltRadius * 0.25f);
+	const FVector MeltSegmentEnd = LocalCollisionLocation - Normal * GetMeltThroughDepth(Normal, LocalMeltRadius);
+	const float RadiusSquared = FMath::Square(LocalMeltRadius);
 	bool bChangedScalarField = false;
 
-	const FVector RadiusExtent(MeltRadius);
+	const FVector RadiusExtent(LocalMeltRadius);
 	const FVector AffectedMin = bMeltThroughSurface
 		? MeltSegmentStart.ComponentMin(MeltSegmentEnd) - RadiusExtent
 		: CraterCenter - RadiusExtent;
@@ -578,7 +615,7 @@ void AMeltableActor::ApplyMeltCrater(
 		{
 			for (int32 X = MinX; X <= MaxX; ++X)
 			{
-				const FVector WorldPoint =
+				const FVector LocalPoint =
 					SurfaceNetsGrid.Origin +
 					FVector(
 						X * SurfaceNetsGrid.CellSize.X,
@@ -587,8 +624,8 @@ void AMeltableActor::ApplyMeltCrater(
 					);
 
 				const float DistanceSquared = bMeltThroughSurface
-					? FMath::PointDistToSegmentSquared(WorldPoint, MeltSegmentStart, MeltSegmentEnd)
-					: FVector::DistSquared(WorldPoint, CraterCenter);
+					? FMath::PointDistToSegmentSquared(LocalPoint, MeltSegmentStart, MeltSegmentEnd)
+					: FVector::DistSquared(LocalPoint, CraterCenter);
 				if (DistanceSquared > RadiusSquared)
 				{
 					continue;
@@ -607,7 +644,7 @@ void AMeltableActor::ApplyMeltCrater(
 				}
 
 				const float Distance = FMath::Sqrt(DistanceSquared);
-				const float Alpha = 1.0f - (Distance / MeltRadius);
+				const float Alpha = 1.0f - (Distance / LocalMeltRadius);
 				const float Falloff = SmoothCraterFalloff(Alpha);
 				ScalarFieldValues[Index] += MeltAmount * Falloff;
 				bChangedScalarField = true;
@@ -683,21 +720,215 @@ void AMeltableActor::BeginPlay()
 {
 	Super::BeginPlay();
 
+	const bool bCanDefer =
+		bDeferConversionUntilMelt &&
+		SourceMeshComponent &&
+		StaticMeshHasUsableSimpleCollision(SourceMeshComponent->GetStaticMesh());
+
+	if (bCanDefer)
+	{
+		// Keep the authored mesh for visuals/collision (holes, materials) until the first melt.
+		if (GeneratedMeshComponent)
+		{
+			GeneratedMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			GeneratedMeshComponent->SetCanEverAffectNavigation(false);
+		}
+
+		// Source was authored as non-navigable because GeneratedMesh normally owns nav.
+		// While deferred, the source mesh is the walkable geometry for players and enemies.
+		SourceMeshComponent->SetCanEverAffectNavigation(true);
+		SourceMeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		SourceMeshComponent->SetCollisionObjectType(ECC_WorldStatic);
+		SourceMeshComponent->SetCollisionResponseToAllChannels(ECR_Block);
+		SourceMeshComponent->CanCharacterStepUpOn = ECB_Yes;
+		UNavigationSystemV1::UpdateComponentInNavOctree(*SourceMeshComponent);
+		return;
+	}
+
+	if (bDeferConversionUntilMelt)
+	{
+		UE_LOG(
+			LogMeltableActor,
+			Log,
+			TEXT("%s source mesh has no usable simple collision; converting immediately so players/nav do not fall through."),
+			*GetName()
+		);
+	}
+
+	EnsureMeltRepresentation();
+}
+
+void AMeltableActor::EnsureMeltRepresentation()
+{
+	if (bHasMeltRepresentation)
+	{
+		return;
+	}
+
+	EnsureSupportCollisionDuringConversion();
+
+	const bool bLoadedBake = TryLoadScalarFieldBake();
+	if (!bLoadedBake)
+	{
+		if (bAutoFitGridToSourceMesh)
+		{
+			AutoFitSurfaceNetsGridToSourceMesh();
+		}
+
+		VertexAttributeCache.Reset();
+		BuildScalarFieldFromStaticMesh(ScalarFieldValues);
+
+		if (!RegenerateSurfaceNetsMesh())
+		{
+			ClearSupportCollision();
+			return;
+		}
+
+#if WITH_EDITOR
+		StoreScalarFieldBake(SurfaceNetsMesh);
+#endif
+	}
+	else if (ScalarFieldBake.HasMesh())
+	{
+		SurfaceNetsMesh.Vertices = ScalarFieldBake.MeshVertices;
+		SurfaceNetsMesh.Triangles = ScalarFieldBake.MeshTriangles;
+		UpdateGeneratedMesh();
+	}
+	else if (!RegenerateSurfaceNetsMesh())
+	{
+		ClearSupportCollision();
+		return;
+	}
+
+	DisableSourceMeshAfterConversion();
+	ClearSupportCollision();
+	bHasMeltRepresentation = true;
+}
+
+void AMeltableActor::BakeScalarFieldCache()
+{
+	if (!SourceMeshComponent || !SourceMeshComponent->GetStaticMesh())
+	{
+		UE_LOG(LogMeltableActor, Warning, TEXT("%s cannot bake scalar field without a source static mesh."), *GetName());
+		return;
+	}
+
 	if (bAutoFitGridToSourceMesh)
 	{
 		AutoFitSurfaceNetsGridToSourceMesh();
 	}
 
-	VertexAttributeCache.Reset();
-	BuildScalarFieldFromStaticMesh(ScalarFieldValues);
+	TArray<float> BakedValues;
+	BuildScalarFieldFromStaticMesh(BakedValues);
+	if (BakedValues.IsEmpty())
+	{
+		UE_LOG(LogMeltableActor, Warning, TEXT("%s bake failed: empty scalar field."), *GetName());
+		return;
+	}
 
-	if (!RegenerateSurfaceNetsMesh())
+	FSurfaceNetsMesh BakedMesh;
+	if (!USurfaceNetsBlueprintLibrary::GenerateSurfaceNetsMesh(
+		SurfaceNetsGrid,
+		BakedValues,
+		BakedMesh,
+		SurfaceNetsIsovalue))
+	{
+		UE_LOG(LogMeltableActor, Warning, TEXT("%s bake failed: surface nets generation failed."), *GetName());
+		return;
+	}
+
+	ScalarFieldValues = MoveTemp(BakedValues);
+	StoreScalarFieldBake(BakedMesh);
+
+	UE_LOG(
+		LogMeltableActor,
+		Log,
+		TEXT("%s baked scalar field (%d samples, %d mesh verts)."),
+		*GetName(),
+		ScalarFieldBake.Values.Num(),
+		ScalarFieldBake.MeshVertices.Num()
+	);
+}
+
+bool AMeltableActor::IsScalarFieldBakeValid() const
+{
+	if (!ScalarFieldBake.HasValues() || !SourceMeshComponent)
+	{
+		return false;
+	}
+
+	const UStaticMesh* Mesh = SourceMeshComponent->GetStaticMesh();
+	if (!Mesh || ScalarFieldBake.SourceMesh.ToSoftObjectPath() != FSoftObjectPath(Mesh))
+	{
+		return false;
+	}
+
+	const int32 ExpectedCount = USurfaceNetsBlueprintLibrary::GetSurfaceNetsScalarFieldValueCount(ScalarFieldBake.Grid);
+	if (ScalarFieldBake.Values.Num() != ExpectedCount)
+	{
+		return false;
+	}
+
+	return FMath::IsNearlyEqual(ScalarFieldBake.TargetCellSize, TargetCellSize)
+		&& ScalarFieldBake.MaxVoxelsPerAxis == MaxVoxelsPerAxis
+		&& ScalarFieldBake.bAddOuterVoxelPadding == bAddOuterVoxelPadding
+		&& FMath::IsNearlyEqual(ScalarFieldBake.AutoFitGridPadding, AutoFitGridPadding)
+		&& FMath::IsNearlyEqual(ScalarFieldBake.Isovalue, SurfaceNetsIsovalue);
+}
+
+bool AMeltableActor::TryLoadScalarFieldBake()
+{
+	if (!IsScalarFieldBakeValid())
+	{
+		return false;
+	}
+
+	SurfaceNetsGrid = ScalarFieldBake.Grid;
+	SurfaceNetsIsovalue = ScalarFieldBake.Isovalue;
+	ScalarFieldValues = ScalarFieldBake.Values;
+	VertexAttributeCache.Reset();
+
+	UE_LOG(
+		LogMeltableActor,
+		Log,
+		TEXT("%s loaded baked scalar field (%d samples)."),
+		*GetName(),
+		ScalarFieldValues.Num()
+	);
+	return true;
+}
+
+void AMeltableActor::StoreScalarFieldBake(const FSurfaceNetsMesh& BakedMesh)
+{
+	if (!SourceMeshComponent)
 	{
 		return;
 	}
 
-	DisableSourceMeshAfterConversion();
+	ScalarFieldBake.SourceMesh = SourceMeshComponent->GetStaticMesh();
+	ScalarFieldBake.SourceRelativeScale = SourceMeshComponent->GetRelativeScale3D();
+	ScalarFieldBake.TargetCellSize = TargetCellSize;
+	ScalarFieldBake.MaxVoxelsPerAxis = MaxVoxelsPerAxis;
+	ScalarFieldBake.bAddOuterVoxelPadding = bAddOuterVoxelPadding;
+	ScalarFieldBake.AutoFitGridPadding = AutoFitGridPadding;
+	ScalarFieldBake.Isovalue = SurfaceNetsIsovalue;
+	ScalarFieldBake.Grid = SurfaceNetsGrid;
+	ScalarFieldBake.Values = ScalarFieldValues;
+	ScalarFieldBake.MeshVertices = BakedMesh.Vertices;
+	ScalarFieldBake.MeshTriangles = BakedMesh.Triangles;
 }
+
+#if WITH_EDITOR
+void AMeltableActor::PreSave(FObjectPreSaveContext SaveContext)
+{
+	Super::PreSave(SaveContext);
+
+	if (bBakeScalarFieldOnSave && SourceMeshComponent && SourceMeshComponent->GetStaticMesh() && !IsScalarFieldBakeValid())
+	{
+		BakeScalarFieldCache();
+	}
+}
+#endif
 
 bool AMeltableActor::RegenerateSurfaceNetsMesh()
 {
@@ -733,10 +964,10 @@ void AMeltableActor::AutoFitSurfaceNetsGridToSourceMesh()
 		return;
 	}
 
-	const FBoxSphereBounds Bounds = SourceMeshComponent->Bounds;
+	const FBox MeshBounds = SourceMeshComponent->GetStaticMesh()->GetBoundingBox();
 	const FVector Padding(AutoFitGridPadding);
-	const FVector BoundsMin = Bounds.GetBox().Min - Padding;
-	const FVector BoundsMax = Bounds.GetBox().Max + Padding;
+	const FVector BoundsMin = MeshBounds.Min - Padding;
+	const FVector BoundsMax = MeshBounds.Max + Padding;
 	const FVector BoundsSize = BoundsMax - BoundsMin;
 
 	if (BoundsSize.X <= UE_SMALL_NUMBER || BoundsSize.Y <= UE_SMALL_NUMBER || BoundsSize.Z <= UE_SMALL_NUMBER)
@@ -745,10 +976,21 @@ void AMeltableActor::AutoFitSurfaceNetsGridToSourceMesh()
 		return;
 	}
 
+	const float SafeTargetCellSize = FMath::Max(TargetCellSize, 1.0f);
+	const int32 SafeMaxVoxelsPerAxis = FMath::Max(MaxVoxelsPerAxis, 1);
+	const auto VoxelCountForAxis = [SafeTargetCellSize, SafeMaxVoxelsPerAxis](double AxisSize)
+	{
+		return FMath::Clamp(FMath::CeilToInt32(AxisSize / SafeTargetCellSize), 1, SafeMaxVoxelsPerAxis);
+	};
+
+	SurfaceNetsGrid.VoxelCountX = VoxelCountForAxis(BoundsSize.X);
+	SurfaceNetsGrid.VoxelCountY = VoxelCountForAxis(BoundsSize.Y);
+	SurfaceNetsGrid.VoxelCountZ = VoxelCountForAxis(BoundsSize.Z);
+
 	const FVector CellSize(
-		BoundsSize.X / FMath::Max(1, SurfaceNetsGrid.VoxelCountX),
-		BoundsSize.Y / FMath::Max(1, SurfaceNetsGrid.VoxelCountY),
-		BoundsSize.Z / FMath::Max(1, SurfaceNetsGrid.VoxelCountZ)
+		BoundsSize.X / SurfaceNetsGrid.VoxelCountX,
+		BoundsSize.Y / SurfaceNetsGrid.VoxelCountY,
+		BoundsSize.Z / SurfaceNetsGrid.VoxelCountZ
 	);
 
 	SurfaceNetsGrid.Origin = BoundsMin;
@@ -765,13 +1007,14 @@ void AMeltableActor::AutoFitSurfaceNetsGridToSourceMesh()
 	UE_LOG(
 		LogMeltableActor,
 		Log,
-		TEXT("%s auto-fit surface-nets grid. Origin=%s CellSize=%s Voxels=(%d, %d, %d) OuterPadding=%s"),
+		TEXT("%s auto-fit surface-nets grid. Origin=%s CellSize=%s Voxels=(%d, %d, %d) TargetCell=%.1f OuterPadding=%s"),
 		*GetName(),
 		*SurfaceNetsGrid.Origin.ToString(),
 		*SurfaceNetsGrid.CellSize.ToString(),
 		SurfaceNetsGrid.VoxelCountX,
 		SurfaceNetsGrid.VoxelCountY,
 		SurfaceNetsGrid.VoxelCountZ,
+		SafeTargetCellSize,
 		bAddOuterVoxelPadding ? TEXT("yes") : TEXT("no")
 	);
 }
@@ -790,19 +1033,88 @@ void AMeltableActor::DisableSourceMeshAfterConversion()
 	SourceMeshComponent->SetHiddenInGame(true, false);
 	SourceMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	SourceMeshComponent->SetGenerateOverlapEvents(false);
+	SourceMeshComponent->SetCanEverAffectNavigation(false);
+	UNavigationSystemV1::UpdateComponentInNavOctree(*SourceMeshComponent);
 }
 
-float AMeltableActor::GetMeltThroughDepth(const FVector& SurfaceNormal, float MeltRadius) const
+void AMeltableActor::EnsureSupportCollisionDuringConversion()
 {
-	const FVector Normal = SurfaceNormal.IsNearlyZero() ? FVector::UpVector : SurfaceNormal.GetSafeNormal();
+	if (!SourceMeshComponent)
+	{
+		return;
+	}
+
+	// Source already walkable — leave it up until generated collision replaces it.
+	if (StaticMeshHasUsableSimpleCollision(SourceMeshComponent->GetStaticMesh()))
+	{
+		SourceMeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		return;
+	}
+
+	if (SupportCollisionComponent)
+	{
+		return;
+	}
+
+	SupportCollisionComponent = NewObject<UBoxComponent>(this, TEXT("MeltSupportCollision"));
+	SupportCollisionComponent->SetupAttachment(SourceMeshComponent);
+	SupportCollisionComponent->SetCanEverAffectNavigation(true);
+	SupportCollisionComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	SupportCollisionComponent->SetCollisionObjectType(ECC_WorldStatic);
+	SupportCollisionComponent->SetCollisionResponseToAllChannels(ECR_Block);
+	SupportCollisionComponent->CanCharacterStepUpOn = ECB_Yes;
+	SupportCollisionComponent->SetHiddenInGame(true);
+	SupportCollisionComponent->SetVisibility(false);
+
+	const FBox LocalBounds = SourceMeshComponent->GetStaticMesh()
+		? SourceMeshComponent->GetStaticMesh()->GetBoundingBox()
+		: FBox(ForceInit);
+	if (LocalBounds.IsValid)
+	{
+		SupportCollisionComponent->SetRelativeLocation(LocalBounds.GetCenter());
+		SupportCollisionComponent->SetRelativeRotation(FRotator::ZeroRotator);
+		SupportCollisionComponent->SetBoxExtent(LocalBounds.GetExtent());
+	}
+	else
+	{
+		const FBox WorldBounds = SourceMeshComponent->Bounds.GetBox();
+		SupportCollisionComponent->SetWorldLocation(WorldBounds.GetCenter());
+		SupportCollisionComponent->SetBoxExtent(
+			SourceMeshComponent->GetComponentTransform().InverseTransformVector(WorldBounds.GetExtent()).GetAbs()
+		);
+	}
+
+	SupportCollisionComponent->RegisterComponent();
+	UNavigationSystemV1::UpdateComponentInNavOctree(*SupportCollisionComponent);
+}
+
+void AMeltableActor::ClearSupportCollision()
+{
+	if (!SupportCollisionComponent)
+	{
+		return;
+	}
+
+	SupportCollisionComponent->SetCanEverAffectNavigation(false);
+	SupportCollisionComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	UNavigationSystemV1::UpdateComponentInNavOctree(*SupportCollisionComponent);
+	SupportCollisionComponent->DestroyComponent();
+	SupportCollisionComponent = nullptr;
+}
+
+float AMeltableActor::GetMeltThroughDepth(const FVector& LocalSurfaceNormal, float LocalMeltRadius) const
+{
+	const FVector Normal = LocalSurfaceNormal.IsNearlyZero() ? FVector::UpVector : LocalSurfaceNormal.GetSafeNormal();
 	const FVector AbsNormal(FMath::Abs(Normal.X), FMath::Abs(Normal.Y), FMath::Abs(Normal.Z));
-	const FBox Bounds = SourceMeshComponent ? SourceMeshComponent->Bounds.GetBox() : GetComponentsBoundingBox(true);
-	const FVector Extent = Bounds.GetExtent();
+	const FBox Bounds = (SourceMeshComponent && SourceMeshComponent->GetStaticMesh())
+		? SourceMeshComponent->GetStaticMesh()->GetBoundingBox()
+		: FBox(ForceInit);
+	const FVector Extent = Bounds.IsValid ? Bounds.GetExtent() : FVector::ZeroVector;
 	const float ProjectedThickness =
 		2.0f * (AbsNormal.X * Extent.X + AbsNormal.Y * Extent.Y + AbsNormal.Z * Extent.Z);
-	const float MinimumDepth = MeltRadius * FMath::Max(1.0f, MeltThroughDepthMultiplier);
+	const float MinimumDepth = LocalMeltRadius * FMath::Max(1.0f, MeltThroughDepthMultiplier);
 
-	return FMath::Max(ProjectedThickness + MeltRadius, MinimumDepth);
+	return FMath::Max(ProjectedThickness + LocalMeltRadius, MinimumDepth);
 }
 
 void AMeltableActor::BuildScalarFieldFromStaticMesh(TArray<float>& OutScalarFieldValues)
@@ -882,10 +1194,9 @@ void AMeltableActor::UpdateGeneratedMesh()
 		return;
 	}
 
-	GeneratedMeshComponent->ClearAllMeshSections();
-
 	if (SurfaceNetsMesh.Vertices.IsEmpty() || SurfaceNetsMesh.Triangles.Num() < 3)
 	{
+		GeneratedMeshComponent->ClearAllMeshSections();
 		GeneratedMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		UNavigationSystemV1::UpdateComponentInNavOctree(*GeneratedMeshComponent);
 		return;
@@ -894,10 +1205,10 @@ void AMeltableActor::UpdateGeneratedMesh()
 	TArray<FVector> LocalVertices;
 	LocalVertices.Reserve(SurfaceNetsMesh.Vertices.Num());
 
-	const FTransform GeneratedMeshTransform = GeneratedMeshComponent->GetComponentTransform();
-	for (const FVector& WorldVertex : SurfaceNetsMesh.Vertices)
+	// Surface nets are authored in mesh-buffer local space (same as GeneratedMesh local).
+	for (const FVector& LocalVertex : SurfaceNetsMesh.Vertices)
 	{
-		LocalVertices.Add(GeneratedMeshTransform.InverseTransformPosition(WorldVertex));
+		LocalVertices.Add(LocalVertex);
 	}
 
 	TArray<int32> Triangles = SurfaceNetsMesh.Triangles;
@@ -924,20 +1235,20 @@ void AMeltableActor::UpdateGeneratedMesh()
 			UV0.Reserve(SurfaceNetsMesh.Vertices.Num());
 			VertexMaterialIndices.Reserve(SurfaceNetsMesh.Vertices.Num());
 
-			for (const FVector& WorldVertex : SurfaceNetsMesh.Vertices)
+			for (const FVector& LocalVertex : SurfaceNetsMesh.Vertices)
 			{
 				// Surface nets emit one vertex per cell, so cache attributes per cell and only
 				// re-run the expensive closest-triangle search for vertices that actually moved.
-				const int32 CellKey = GetGridCellKey(SurfaceNetsGrid, WorldVertex);
+				const int32 CellKey = GetGridCellKey(SurfaceNetsGrid, LocalVertex);
 				const FMeltableCachedVertexAttributes* CachedAttributes = VertexAttributeCache.Find(CellKey);
 
 				if (!CachedAttributes ||
-					FVector::DistSquared(CachedAttributes->Position, WorldVertex) > UE_KINDA_SMALL_NUMBER)
+					FVector::DistSquared(CachedAttributes->Position, LocalVertex) > UE_KINDA_SMALL_NUMBER)
 				{
 					FMeltableCachedVertexAttributes NewAttributes;
-					NewAttributes.Position = WorldVertex;
+					NewAttributes.Position = LocalVertex;
 					TryGetClosestSourceMeshAttributes(
-						WorldVertex,
+						LocalVertex,
 						SourceTriangles,
 						&NewAttributes.UV,
 						&NewAttributes.MaterialIndex
@@ -990,10 +1301,18 @@ void AMeltableActor::UpdateGeneratedMesh()
 
 	ComputeNormalsAndTangents(LocalVertices, Triangles, UV0, Normals, Tangents);
 
+	// Replace sections in place. Clearing first dropped all collision until cook finished.
+	const int32 PreviousSectionCount = GeneratedMeshComponent->GetNumSections();
+	int32 HighestUsedSection = INDEX_NONE;
+
 	for (int32 MaterialIndex = 0; MaterialIndex < TrianglesByMaterialIndex.Num(); ++MaterialIndex)
 	{
 		if (TrianglesByMaterialIndex[MaterialIndex].IsEmpty())
 		{
+			if (MaterialIndex < PreviousSectionCount)
+			{
+				GeneratedMeshComponent->ClearMeshSection(MaterialIndex);
+			}
 			continue;
 		}
 
@@ -1007,6 +1326,12 @@ void AMeltableActor::UpdateGeneratedMesh()
 			Tangents,
 			bEnableGeneratedMeshCollision
 		);
+		HighestUsedSection = MaterialIndex;
+	}
+
+	for (int32 SectionIndex = PreviousSectionCount - 1; SectionIndex > HighestUsedSection; --SectionIndex)
+	{
+		GeneratedMeshComponent->ClearMeshSection(SectionIndex);
 	}
 
 	GeneratedMeshComponent->bUseComplexAsSimpleCollision = true;
@@ -1017,8 +1342,6 @@ void AMeltableActor::UpdateGeneratedMesh()
 	GeneratedMeshComponent->SetCollisionResponseToAllChannels(ECR_Block);
 	GeneratedMeshComponent->CanCharacterStepUpOn = ECB_Yes;
 	UNavigationSystemV1::UpdateComponentInNavOctree(*GeneratedMeshComponent);
-	// CreateMeshSection already updates/cooks collision. Recreating the physics
-	// state here forced a second synchronous rebuild on every melt update.
 
 	if (SourceMeshComponent)
 	{
